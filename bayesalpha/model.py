@@ -73,7 +73,7 @@ def build_model(data, algos=None, is_author_is=None, *, shrinkage, **params):
             gains = pm.Deterministic('gains', gains)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'exponential':
-            gains_sd = pm.HalfNormal('gains_sd', sd=0.2)
+            gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
             gains_raw = pm.Laplace('gains_raw', mu=0, b=1, shape=k)
 
             author_is = pm.Normal('author_is', shape=k)
@@ -113,6 +113,7 @@ def build_model(data, algos=None, is_author_is=None, *, shrinkage, **params):
         if gains_time_sd_sd is None:
             gains_time_sd_sd = pm.HalfStudentT('gains_time_sd_sd', nu=3, sd=0.1)
         else:
+            gains_time_sd_sd = tt.as_tensor_variable(gains_time_sd_sd)
             gains_time_sd_sd = pm.Deterministic('gains_time_sd_sd', gains_time_sd_sd)
         gains_time_sd_raw = pm.HalfStudentT('gains_time_sd_raw', nu=3, sd=1, shape=k)
         gains_time_sd = pm.Deterministic(
@@ -206,13 +207,16 @@ class FitResult:
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
 
-    def plot_gains_pos_prob(self, algos=None, ax=None):
+    def plot_gains_pos_prob(self, algos=None, ax=None, sort=True):
         if ax is None:
             _, ax = plt.subplots(1, 1, figsize=(4, 7))
         if algos is not None:
             vals = self.gains_pos_prob().loc(algo=algos)
         else:
             vals = self.gains_pos_prob()
+
+        if sort:
+            vals = vals.sort_values()
 
         y = -np.arange(len(vals))
         ax.grid(axis='x', color='w', zorder=-5)
@@ -300,9 +304,9 @@ def fit_single(data, *, population_fit=None, algos=None, is_author_is=None,
         population = population_fit.trace
         popgains = population['gains']
         pop_mutime = population['gains_time_sd_sd']
-        params.setdefault('gains_mu', np.mean(popgains))
-        params.setdefault('gains_sd', np.std(popgains))
-        params.setdefault('mu_time_sd_sd', np.mean(pop_mutime))
+        params.setdefault('gains_mu', float(popgains.mean()))
+        params.setdefault('gains_sd', float(popgains.std()))
+        params.setdefault('gains_time_sd_sd', float(pop_mutime.mean()))
     return fit_population(data, algos=algos, is_author_is=is_author_is,
                           sampler_args=sampler_args, **params)
 
@@ -314,8 +318,8 @@ def load(filename, group):
 
 def _check_data(data):
     if data.count().min() < 100:
-        raise ValueError('The dataset contains algos with fewer than 100 '
-                         'observations.')
+        warnings.warn('The dataset contains algos with fewer than 100 '
+                      'observations.')
     if not data.index.dtype_str.startswith('datetime'):
         raise ValueError('Index of dataset must have a datetime dtype')
     if (np.abs(data) > 0.2).any().any():
