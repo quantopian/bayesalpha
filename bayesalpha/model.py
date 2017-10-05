@@ -13,7 +13,8 @@ import random
 import pandas as pd
 
 from bayesalpha.dists import bspline_basis, GPExponential, NormalNonZero
-from bayesalpha.serialize import xarray_hash, to_xarray
+from bayesalpha.serialize import to_xarray
+from bayesalpha._version import get_versions
 
 
 _PARAM_DEFAULTS = {
@@ -188,10 +189,6 @@ class FitResult:
         return json.loads(self._trace.attrs['params'])
 
     @property
-    def result_hash(self):
-        return xarray_hash(self._trace)
-
-    @property
     def timestamp(self):
         return self._trace.attrs['timestamp']
 
@@ -216,6 +213,14 @@ class FitResult:
     @property
     def seed(self):
         return self._trace.attrs['seed']
+
+    @property
+    def id(self):
+        hasher = hashlib.sha256()
+        hasher.update(self.params_hash.encode())
+        hasher.update(self.model_version.encode())
+        hasher.update(str(self.seed).encode())
+        return hasher.hexdigest()[:16]
 
     def raise_ok(self):
         if not self.ok:
@@ -310,7 +315,7 @@ def fit_population(data, algos, sampler_args=None, save_data=True,
     trace.attrs['timestamp'] = timestamp
     trace.attrs['warnings'] = json.dumps([str(warn) for warn in warns])
     trace.attrs['seed'] = seed
-    # TODO write model_version
+    trace.attrs['model-version'] = get_versions()['version']
 
     if save_data:
         trace.coords['algodata'] = algos.columns
@@ -384,12 +389,18 @@ def fit_single(data, algos, population_fit=None, sampler_args=None, seed=None,
         if population_fit is None:
             raise ValueError('population_fit or %s and %s must be specified.'
                              % (name_mu, name_sd))
-        trace_vals = population_fit[name]
+        trace_vals = population_fit.trace[name]
         params.setdefault(name_mu, float(trace_vals.mean()))
-        params.setdefault(name_sd, float(trace_vals.sd()))
+        params.setdefault(name_sd, float(trace_vals.std()))
 
-    return fit_population(data, algos=algos, sampler_args=sampler_args,
-                          seed=seed, **params)
+    fit = fit_population(data, algos=algos, sampler_args=sampler_args,
+                         seed=seed, shrinkage=shrinkage, **params)
+    if population_fit is not None:
+        parent = population_fit.trace
+        fit.trace.attrs['parent-params'] = parent.attrs['params']
+        fit.trace.attrs['parent-seed'] = parent.attrs['seed']
+        fit.trace.attrs['parent-version'] = parent.attrs['version']
+        fit.trace.attrs['parent-id'] = population_fit.id
 
 
 def load(filename, group):

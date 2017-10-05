@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from os.path import realpath, dirname, join
 from setuptools import setup, find_packages
+import versioneer
 
 DISTNAME = 'bayesalpha'
 AUTHOR = 'Adrian Seyboldt'
@@ -15,6 +16,7 @@ with open(REQUIREMENTS_FILE) as reqfile:
 
 if __name__ == "__main__":
     setup(name=DISTNAME,
-          version=VERSION,
+          version=versioneer.get_version(),
+          cmdclass=versioneer.get_cmdclass(),
           packages=find_packages(),
           install_requires=install_reqs)
