@@ -9,6 +9,8 @@ import xarray as xr
 from datetime import datetime
 import warnings
 import matplotlib.pyplot as plt
+import random
+import pandas as pd
 
 from bayesalpha.dists import bspline_basis, GPExponential, NormalNonZero
 from bayesalpha.serialize import xarray_hash, to_xarray
@@ -19,17 +21,15 @@ _PARAM_DEFAULTS = {
 }
 
 
-def build_model(data, algos=None, is_author_is=None, *, shrinkage, **params):
+def build_model(data, algos, **params):
     data = data.fillna(0.)
     params = params.copy()
 
-    if is_author_is is None:
-        is_author_is = np.zeros(data.shape, dtype=np.int8)
-        for i, algo in enumerate(data):
-            if algo not in algos.index:
-                is_author_is[:len(is_author_is) // 2, i] = True
-            else:
-                is_author_is[:, i] = data.index < algos.created_at.loc[algo]
+    is_author_is = np.zeros(data.shape, dtype=np.int8)
+    for i, algo in enumerate(data):
+        if algo not in algos.index or pd.isnull(algos.created_at.loc[algo]):
+            raise ValueError('No `created_at` value for algo %s' % algo)
+        is_author_is[:, i] = data.index < algos.created_at.loc[algo]
 
     duration = data.index[-1] - data.index[0]
 
@@ -41,7 +41,7 @@ def build_model(data, algos=None, is_author_is=None, *, shrinkage, **params):
     Bx_log_vlt = bspline_basis(n_knots_vlt, time_vlt)
     Bx_log_vlt = sparse.csr_matrix(Bx_log_vlt)
 
-    n_knots_gains = duration.days // 20
+    n_knots_gains = duration.days // 10
     time_gains = np.linspace(0, 1, n)
     Bx_gains = bspline_basis(n_knots_gains, time_gains)
     Bx_gains = sparse.csr_matrix(Bx_gains)
@@ -62,7 +62,9 @@ def build_model(data, algos=None, is_author_is=None, *, shrinkage, **params):
         log_vlt = pm.Deterministic('log_vlt', log_vlt)
         vlt = tt.exp(log_vlt)
 
-        # Define shrinkage model on the long-time gains
+        shrinkage = params.pop('shrinkage')
+
+        # Define shrinkage model on the long-term gains
         if shrinkage == 'exponential-mix':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.2)
             gains_theta = pm.Exponential('gains_theta', lam=1, shape=k)
@@ -88,33 +90,38 @@ def build_model(data, algos=None, is_author_is=None, *, shrinkage, **params):
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'normal':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.2)
-            gains_raw = pm.Normal('gains_raw', mu=0, sd=1, shape=k)
+            gains_raw = pm.Normal('gains_raw', shape=k)
 
             author_is = pm.Normal('author_is', shape=k)
             gains = pm.Deterministic('gains', gains_sd * gains_raw)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
-        elif shrinkage == 'trace-normal':
-            if 'gains_mu' not in params or 'gains_sd' not in params:
-                raise ValueError('gains_mu and gains_sd must be '
-                                 'specified for trace-normal shrinkage.')
-            gains_mu = params.pop('gains_mu')
-            gains_sd = params.pop('gains_sd')
-            gains_raw = pm.Normal('gains_raw', mu=0, sd=1, shape=k)
+        elif shrinkage == 'trace-exponential':
+            mu = params.pop('gains_sd_trace_mu')
+            sd = params.pop('gains_sd_trace_sd')
+            gains_sd = pm.Normal('gains_sd', mu=mu, sd=sd)
+            gains_raw = pm.Laplace('gains_raw', mu=0, b=1, shape=k)
             author_is = pm.Normal('author_is', shape=k)
-            gains = pm.Deterministic(
-                'gains', gains_sd * gains_raw + gains_mu)
+            gains = pm.Deterministic('gains', gains_sd * gains_raw)
+            gains_all = gains[None, :] + author_is[None, :] * is_author_is
+        elif shrinkage == 'trace-normal':
+            mu = params.pop('gains_sd_trace_mu')
+            sd = params.pop('gains_sd_trace_sd')
+            gains_sd = pm.Normal('gains_sd', mu=mu, sd=sd)
+            gains_raw = pm.Normal('gains_raw', shape=k)
+            author_is = pm.Normal('author_is', shape=k)
+            gains = pm.Deterministic('gains', gains_sd * gains_raw)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         else:
             raise ValueError('Unknown gains model: %s' % shrinkage)
 
         # Define variations of gains over time
         gains_time_alpha = pm.HalfNormal('gains_time_alpha', sd=0.1)
-        gains_time_sd_sd = params.pop('gains_time_sd_sd', None)
-        if gains_time_sd_sd is None:
-            gains_time_sd_sd = pm.HalfStudentT('gains_time_sd_sd', nu=3, sd=0.1)
+        if 'gains_time_sd_sd_trace_mu' in params:
+            mu = params.pop('gains_time_sd_sd_trace_mu')
+            sd = params.pop('gains_time_sd_sd_trace_sd')
+            gains_time_sd_sd = pm.Normal('gains_time_sd_sd', mu=mu, sd=sd)
         else:
-            gains_time_sd_sd = tt.as_tensor_variable(gains_time_sd_sd)
-            gains_time_sd_sd = pm.Deterministic('gains_time_sd_sd', gains_time_sd_sd)
+            gains_time_sd_sd = pm.HalfStudentT('gains_time_sd_sd', nu=3, sd=0.1)
         gains_time_sd_raw = pm.HalfStudentT('gains_time_sd_raw', nu=3, sd=1, shape=k)
         gains_time_sd = pm.Deterministic(
             'gains_time_sd', gains_time_sd_sd * gains_time_sd_raw)
@@ -189,6 +196,10 @@ class FitResult:
         return self._trace.attrs['timestamp']
 
     @property
+    def model_version(self):
+        return self._trace.attrs['model-version']
+
+    @property
     def params_hash(self):
         params = json.dumps(self.params, sort_keys=True)
         hasher = hashlib.sha256(params.encode())
@@ -201,6 +212,10 @@ class FitResult:
     @property
     def warnings(self):
         return json.loads(self._trace.attrs['warnings'])
+
+    @property
+    def seed(self):
+        return self._trace.attrs['seed']
 
     def raise_ok(self):
         if not self.ok:
@@ -248,7 +263,8 @@ class FitResult:
             .rename('gains_rope'))
 
 
-def fit_population(data, *, algos=None, is_author_is=None, sampler_args=None, **params):
+def fit_population(data, algos, sampler_args=None, save_data=True,
+                   seed=None, **params):
     """Fit the model to daily returns.
 
     Parameters
@@ -258,57 +274,122 @@ def fit_population(data, *, algos=None, is_author_is=None, sampler_args=None, **
         algos, rows the days. If an algorithm doesn't do anything on a day,
         that value can be NaN.
     algos : pd.DataFrame
-        Dataframe containing metadata about the algorithms. If specified,
-        it must contain a column 'created_at', with the dates when
-        the algorithm was created. All later daily returns are interpreted
-        as author-out-of-sample.
-    is_author_is : np.array
-        Alternatively to `algos`, the author-out-of-sample times can be
-        specified as a boolean array with shape (n_time, n_algos).
-    sample_args : dict
+        Dataframe containing metadata about the algorithms. It must contain
+        a column 'created_at', with the dates when the algorithm was created.
+        All later daily returns are interpreted as author-out-of-sample.
+    sampler_args : dict
         Additional parameters for `pm.sample`.
+    save_data : bool
+        Whether to store the dataset in the result object.
+    seed : int
+        Seed for random number generation in PyMC3.
     """
-    if (algos is None) and (is_author_is is None):
-        raise ValueError('Exactly one of `algos` and `is_author_is` must be '
-                         'specified.')
     _check_data(data)
     params_ = _PARAM_DEFAULTS.copy()
     params_.update(params)
     params = params_
-    model, coords, dims = build_model(data, algos, is_author_is, **params)
+
+    if sampler_args is None:
+        sampler_args = {}
+    if seed is None:
+        seed = random.getrandbits(32)
+    if 'random_seed' in sampler_args:
+        raise ValueError('Can not specify `random_seed`.')
+    sampler_args['random_seed'] = seed
+
+    model, coords, dims = build_model(data, algos, **params)
     timestamp = datetime.isoformat(datetime.now())
     with model:
         args = {} if sampler_args is None else sampler_args
         with warnings.catch_warnings(record=True) as warns:
             trace = pm.sample(**args)
+    if warns:
+        warnings.warn('Problems during sampling. Inspect `result.warnings`.')
     trace = to_xarray(trace, coords, dims)
     trace.attrs['params'] = json.dumps(params)
     trace.attrs['timestamp'] = timestamp
     trace.attrs['warnings'] = json.dumps([str(warn) for warn in warns])
+    trace.attrs['seed'] = seed
+    # TODO write model_version
+
+    if save_data:
+        trace.coords['algodata'] = algos.columns
+        trace['_data'] = (('time', 'algo'), data)
+        trace['_algos'] = (('algo', 'algodata'), algos)
     return FitResult(trace)
 
 
-def fit_single(data, *, population_fit=None, algos=None, is_author_is=None,
-               sampler_args=None, **params):
-    params = params.copy()
-    shrinkage = params.setdefault('shrinkage', 'trace-normal')
-    if shrinkage != 'trace-normal':
-        raise ValueError('shrinkage can not be specified for single algo run.')
+_TRACE_PARAM_NAMES = {
+    'normal': (
+        'trace-normal',
+        ['gains_sd', 'gains_time_sd_sd']),
+    'exponential': (
+        'trace-exponential',
+        ['gains_sd', 'gains_time_sd_sd']
+    )
+}
 
-    # TODO some kind of normal test?
-    if any(var not in params
-           for var in ['gains_mu', 'gains_sd', 'gains_time_sd_sd']):
+
+def fit_single(data, algos, population_fit=None, sampler_args=None, seed=None,
+               **params):
+    """Fit the model to algorithms and use an earlier run for hyperparameters.
+
+    Use a model fit with a large number of algorithms to get estimates
+    for global parameters -- for example those that inform about the
+    distribution of gain parameters.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        The dataframe containing the returns. Columns are the different
+        algos, rows the days. If an algorithm doesn't do anything on a day,
+        that value can be NaN.
+    algos : pd.DataFrame
+        Dataframe containing metadata about the algorithms. It must contain
+        a column 'created_at', with the dates when the algorithm was created.
+        All later daily returns are interpreted as author-out-of-sample.
+    population_fit : FitResult
+        The result of a previous model fit using `fit_population`. If this
+        is not specified, all necessary parameters have to be specified as
+        keyword arguments.
+    sampler_args : dict
+        Additional arguments for `pm.sample`
+    seed : int
+        Seed for random numbers during sampling.
+    """
+    params = params.copy()
+
+    if population_fit is None:
+        trace_shrinkage = None
+    else:
+        trace_shrinkage = population_fit.params['shrinkage']
+
+    shrinkage = params.pop('shrinkage', trace_shrinkage)
+    if shrinkage is None:
+        raise ValueError('Either `shrinkage` or `population_fit` has to be '
+                         'specified.')
+    if trace_shrinkage is not None and shrinkage != trace_shrinkage:
+        raise ValueError('Can not use different shrinkage type in population '
+                         'and single algo fit.')
+
+    if shrinkage not in _TRACE_PARAM_NAMES:
+        raise ValueError('Can not fit single algo for shrinkage %s' % shrinkage)
+    shrinkage, param_names = _TRACE_PARAM_NAMES[shrinkage]
+
+    for name in param_names:
+        name_mu = name + '_trace_mu'
+        name_sd = name + '_trace_sd'
+        if name_mu in params and name_sd in params:
+            continue
         if population_fit is None:
-            raise ValueError('population_fit or all of `gains_mu`, `gains_sd` '
-                             'and `gains_time_sd_sd` must be specified.')
-        population = population_fit.trace
-        popgains = population['gains']
-        pop_mutime = population['gains_time_sd_sd']
-        params.setdefault('gains_mu', float(popgains.mean()))
-        params.setdefault('gains_sd', float(popgains.std()))
-        params.setdefault('gains_time_sd_sd', float(pop_mutime.mean()))
-    return fit_population(data, algos=algos, is_author_is=is_author_is,
-                          sampler_args=sampler_args, **params)
+            raise ValueError('population_fit or %s and %s must be specified.'
+                             % (name_mu, name_sd))
+        trace_vals = population_fit[name]
+        params.setdefault(name_mu, float(trace_vals.mean()))
+        params.setdefault(name_sd, float(trace_vals.sd()))
+
+    return fit_population(data, algos=algos, sampler_args=sampler_args,
+                          seed=seed, **params)
 
 
 def load(filename, group):
