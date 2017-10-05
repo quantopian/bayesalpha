@@ -99,7 +99,7 @@ def build_model(data, algos, **params):
         elif shrinkage == 'trace-exponential':
             mu = params.pop('gains_sd_trace_mu')
             sd = params.pop('gains_sd_trace_sd')
-            gains_sd = pm.Normal('gains_sd', mu=mu, sd=sd)
+            gains_sd = pm.Bound(pm.Normal, lower=0)('gains_sd', mu=mu, sd=sd)
             gains_raw = pm.Laplace('gains_raw', mu=0, b=1, shape=k)
             author_is = pm.Normal('author_is', shape=k)
             gains = pm.Deterministic('gains', gains_sd * gains_raw)
@@ -120,7 +120,8 @@ def build_model(data, algos, **params):
         if 'gains_time_sd_sd_trace_mu' in params:
             mu = params.pop('gains_time_sd_sd_trace_mu')
             sd = params.pop('gains_time_sd_sd_trace_sd')
-            gains_time_sd_sd = pm.Normal('gains_time_sd_sd', mu=mu, sd=sd)
+            BoundNormal = pm.Bound(pm.Normal, lower=0)
+            gains_time_sd_sd = BoundNormal('gains_time_sd_sd', mu=mu, sd=sd)
         else:
             gains_time_sd_sd = pm.HalfStudentT('gains_time_sd_sd', nu=3, sd=0.1)
         gains_time_sd_raw = pm.HalfStudentT('gains_time_sd_raw', nu=3, sd=1, shape=k)
@@ -296,6 +297,8 @@ def fit_population(data, algos, sampler_args=None, save_data=True,
 
     if sampler_args is None:
         sampler_args = {}
+    else:
+        sampler_args = sampler_args.copy()
     if seed is None:
         seed = random.getrandbits(32)
     if 'random_seed' in sampler_args:
@@ -320,7 +323,7 @@ def fit_population(data, algos, sampler_args=None, save_data=True,
     if save_data:
         trace.coords['algodata'] = algos.columns
         trace['_data'] = (('time', 'algo'), data)
-        trace['_algos'] = (('algo', 'algodata'), algos)
+        trace['_algos'] = (('algo', 'algodata'), algos.loc[data.columns])
     return FitResult(trace)
 
 
@@ -399,8 +402,9 @@ def fit_single(data, algos, population_fit=None, sampler_args=None, seed=None,
         parent = population_fit.trace
         fit.trace.attrs['parent-params'] = parent.attrs['params']
         fit.trace.attrs['parent-seed'] = parent.attrs['seed']
-        fit.trace.attrs['parent-version'] = parent.attrs['version']
+        fit.trace.attrs['parent-version'] = parent.attrs['model-version']
         fit.trace.attrs['parent-id'] = population_fit.id
+    return fit
 
 
 def load(filename, group):
