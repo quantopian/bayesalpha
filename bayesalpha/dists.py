@@ -13,7 +13,7 @@ class NormalNonZero(pm.Normal):
 
 class ScaledMvNormal(pm.Continuous):
     def __init__(self, mu, chol, sd_scale, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super(ScaledMvNormal, self).__init__(*args, **kwargs)
         self._mu = tt.as_tensor_variable(mu)
         self._chol = tt.as_tensor_variable(chol)
         self._sd_scale = tt.as_tensor_variable(sd_scale)
@@ -58,7 +58,7 @@ class GPExponential(pm.Continuous):
         self._alpha = tt.as_tensor_variable(alpha)
         self._sigma = tt.as_tensor_variable(sigma)
         self.mean = self.median = self.mode = mu
-        super().__init__(*args, **kwargs)
+        super(GPExponential, self).__init__(*args, **kwargs)
 
     def logp(self, value):
         mu, alpha, sigma = self._mu, self._alpha, self._sigma
