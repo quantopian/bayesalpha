@@ -1,3 +1,5 @@
+from functools import partial
+
 import numpy as np
 from scipy import sparse
 import theano
@@ -228,9 +230,9 @@ class FitResult:
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
 
-    def plot_prob(self, algos=None, ax=None, sort=True, rope=False):
+    def plot_prob(self, algos=None, ax=None, sort=True, rope=False, rope_upper=.05, rope_lower=None):
         if rope:
-            prob_func = self.gains_rope
+            prob_func = partial(self.gains_rope, rope_upper, lower=rope_lower)
         else:
             prob_func = self.gains_pos_prob
         if ax is None:
@@ -247,15 +249,19 @@ class FitResult:
         ax.grid(axis='x', color='w', zorder=-5)
         ax.scatter(vals.values, y, marker='d', zorder=5)
         ax.axvline(0.5, alpha=0.3, color='black')
-        ax.set_xlim(0, 1)
+
         locs = y
         ax.barh(locs, [max(ax.get_xticks())] * len(locs),
                 height=(locs[1]-locs[0]),
                 color=['lightgray', 'w'],
                 zorder=-10, alpha=.25)
-        ax.set_yticks(y)
-        ax.set_yticklabels(vals.index)
-        ax.set_ylim(-len(y) + .5, .5)
+        xlabel = 'P(gains ~ 0)' if rope else 'P(gains > 0)'
+        ax.set(xlim=(0, 1),
+               xlabel=xlabel,
+               yticks=y,
+               yticklabels=vals.index,
+               ylim=(-len(y) + .5, .5))
+
         return ax
 
     def gains_pos_prob(self):
