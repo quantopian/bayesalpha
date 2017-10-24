@@ -228,13 +228,17 @@ class FitResult:
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
 
-    def plot_gains_pos_prob(self, algos=None, ax=None, sort=True):
+    def plot_prob(self, algos=None, ax=None, sort=True, rope=False):
+        if rope:
+            prob_func = self.gains_rope
+        else:
+            prob_func = self.gains_pos_prob
         if ax is None:
             _, ax = plt.subplots(1, 1, figsize=(4, 7))
         if algos is not None:
-            vals = self.gains_pos_prob().loc(algo=algos)
+            vals = prob_func().loc(algo=algos)
         else:
-            vals = self.gains_pos_prob()
+            vals = prob_func()
 
         if sort:
             vals = vals.sort_values()
@@ -261,9 +265,11 @@ class FitResult:
             .to_series()
             .rename('gains_pos_prob'))
 
-    def gains_rope(self, upper):
+    def gains_rope(self, upper, lower=None):
+        if lower is None:
+            lower = -upper
         return (
-            (self.trace['gains'] > upper)
+            (lower > self.trace['gains'] > upper)
             .mean(['sample', 'chain'])
             .to_series()
             .rename('gains_rope'))
