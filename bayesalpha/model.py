@@ -323,7 +323,10 @@ def fit_population(data, algos, sampler_args=None, save_data=True,
     if save_data:
         trace.coords['algodata'] = algos.columns
         trace['_data'] = (('time', 'algo'), data)
-        trace['_algos'] = (('algo', 'algodata'), algos.loc[data.columns])
+        try:
+            trace['_algos'] = (('algo', 'algodata'), algos.loc[data.columns])
+        except ValueError:
+            warnings.warn('Could not save algo metadata, skipping.')
     return FitResult(trace)
 
 
