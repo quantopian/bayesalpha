@@ -238,7 +238,7 @@ class FitResult:
         if ax is None:
             _, ax = plt.subplots(1, 1, figsize=(4, 7))
         if algos is not None:
-            vals = prob_func().loc(algo=algos)
+            vals = prob_func().loc[algos]
         else:
             vals = prob_func()
 
