@@ -275,7 +275,7 @@ class FitResult:
         if lower is None:
             lower = -upper
         return (
-            (self.trace['gains'] > lower) & (self.trace['gains'] < upper)
+            ((self.trace['gains'] > lower) & (self.trace['gains'] < upper))
             .mean(['sample', 'chain'])
             .to_series()
             .rename('gains_rope'))
