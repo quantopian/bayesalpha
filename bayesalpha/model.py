@@ -251,16 +251,19 @@ class FitResult:
         ax.axvline(0.5, alpha=0.3, color='black')
 
         locs = y
-        ax.barh(locs, [max(ax.get_xticks())] * len(locs),
-                height=(locs[1]-locs[0]),
-                color=['lightgray', 'w'],
-                zorder=-10, alpha=.25)
+
         xlabel = 'P(gains ~ 0)' if rope else 'P(gains > 0)'
         ax.set(xlim=(0, 1),
                xlabel=xlabel,
                yticks=y,
                yticklabels=vals.index,
                ylim=(-len(y) + .5, .5))
+
+        ax.barh(locs, [max(ax.get_xticks())] * len(locs),
+                height=(locs[1]-locs[0]),
+                color=['lightgray', 'w'],
+                zorder=-10, alpha=.25)
+
 
         return ax
 
