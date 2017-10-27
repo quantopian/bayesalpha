@@ -17,7 +17,7 @@ import pandas as pd
 from bayesalpha.dists import bspline_basis, GPExponential, NormalNonZero
 from bayesalpha.serialize import to_xarray
 from bayesalpha._version import get_versions
-
+from bayesalpha.plotting import plot_horizontal_dots
 
 _PARAM_DEFAULTS = {
     'shrinkage': 'exponential'
@@ -235,35 +235,15 @@ class FitResult:
             prob_func = partial(self.gains_rope, rope_upper, lower=rope_lower)
         else:
             prob_func = self.gains_pos_prob
-        if ax is None:
-            _, ax = plt.subplots(1, 1, figsize=(4, 7))
+
         if algos is not None:
             vals = prob_func().loc[algos]
         else:
             vals = prob_func()
 
-        if sort:
-            vals = vals.sort_values()
-
-        y = -np.arange(len(vals))
-        ax.grid(axis='x', color='w', zorder=-5)
-        ax.scatter(vals.values, y, marker='d', zorder=5)
-        ax.axvline(0.5, alpha=0.3, color='black')
-
-        locs = y
-
         xlabel = 'P(gains ~ 0)' if rope else 'P(gains > 0)'
-        ax.set(xlim=(0, 1),
-               xlabel=xlabel,
-               yticks=y,
-               yticklabels=vals.index,
-               ylim=(-len(y) + .5, .5))
 
-        ax.barh(locs, [max(ax.get_xticks())] * len(locs),
-                height=(locs[1]-locs[0]),
-                color=['lightgray', 'w'],
-                zorder=-10, alpha=.25)
-
+        ax = plot_horizontal_dots(vals, sort=sort, ax=ax, xlabel=xlabel)
 
         return ax
 
