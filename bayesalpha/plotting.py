@@ -11,7 +11,6 @@ def plot_horizontal_dots(vals, sort=True, ax=None, **kwargs):
     y = -np.arange(len(vals))
 
     plot_kwargs = dict(xlim=(0, 1),
-                       xlabel=xlabel,
                        yticks=y,
                        yticklabels=vals.index,
                        ylim=(-len(y) + .5, .5))
