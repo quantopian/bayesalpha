@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import numpy as np
 
 def plot_horizontal_dots(vals, sort=True, ax=None, **kwargs):
     if ax is None:
