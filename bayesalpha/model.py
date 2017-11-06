@@ -133,10 +133,10 @@ def build_model(data, algos, **params):
                 'gains_time_sd_sd', tt.exp(log_gains_time_sd_sd))
         else:
             gains_time_sd_sd = pm.HalfStudentT(
-                'gains_time_sd_sd', nu=3, beta=0.1)
+                'gains_time_sd_sd', nu=3, sd=0.1)
             pm.Deterministic('log_gains_time_sd_sd', tt.log(gains_time_sd_sd))
         gains_time_sd_raw = pm.HalfStudentT(
-            'gains_time_sd_raw', nu=3, beta=1, shape=k)
+            'gains_time_sd_raw', nu=3, sd=1, shape=k)
         gains_time_sd = pm.Deterministic(
             'gains_time_sd', gains_time_sd_sd * gains_time_sd_raw)
         gains_time_raw = GPExponential(
