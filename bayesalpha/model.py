@@ -1,4 +1,5 @@
 from functools import partial
+import warnings
 
 import numpy as np
 from scipy import sparse
@@ -9,8 +10,6 @@ import json
 import hashlib
 import xarray as xr
 from datetime import datetime
-import warnings
-import matplotlib.pyplot as plt
 import random
 import pandas as pd
 
@@ -70,6 +69,7 @@ def build_model(data, algos, **params):
         # Define shrinkage model on the long-term gains
         if shrinkage == 'exponential-mix':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.2)
+            pm.Deterministic('log_gains_sd', tt.log(gains_sd))
             gains_theta = pm.Exponential('gains_theta', lam=1, shape=k)
             gains_eta = pm.Normal('gains_eta', shape=k)
 
@@ -79,6 +79,7 @@ def build_model(data, algos, **params):
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'exponential':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
+            pm.Deterministic('log_gains_sd', tt.log(gains_sd))
             gains_raw = pm.Laplace('gains_raw', mu=0, b=1, shape=k)
 
             author_is = pm.Normal('author_is', shape=k)
@@ -86,6 +87,7 @@ def build_model(data, algos, **params):
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'student':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.2)
+            pm.Deterministic('log_gains_sd', tt.log(gains_sd))
             gains_raw = pm.StudentT('gains_raw', nu=4, mu=0, sd=1, shape=k)
 
             author_is = pm.Normal('author_is', shape=k)
@@ -93,23 +95,26 @@ def build_model(data, algos, **params):
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'normal':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.2)
+            pm.Deterministic('log_gains_sd', tt.log(gains_sd))
             gains_raw = pm.Normal('gains_raw', shape=k)
 
             author_is = pm.Normal('author_is', shape=k)
             gains = pm.Deterministic('gains', gains_sd * gains_raw)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'trace-exponential':
-            mu = params.pop('gains_sd_trace_mu')
-            sd = params.pop('gains_sd_trace_sd')
-            gains_sd = pm.Bound(pm.Normal, lower=0)('gains_sd', mu=mu, sd=sd)
+            mu = params.pop('log_gains_sd_trace_mu')
+            sd = params.pop('log_gains_sd_trace_sd')
+            log_gains_sd = pm.Normal('log_gains_sd', mu=mu, sd=sd)
+            gains_sd = pm.Deterministic('gains_sd', tt.exp(log_gains_sd))
             gains_raw = pm.Laplace('gains_raw', mu=0, b=1, shape=k)
             author_is = pm.Normal('author_is', shape=k)
             gains = pm.Deterministic('gains', gains_sd * gains_raw)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'trace-normal':
-            mu = params.pop('gains_sd_trace_mu')
-            sd = params.pop('gains_sd_trace_sd')
-            gains_sd = pm.Normal('gains_sd', mu=mu, sd=sd)
+            mu = params.pop('log_gains_sd_trace_mu')
+            sd = params.pop('log_gains_sd_trace_sd')
+            log_gains_sd = pm.Normal('log_gains_sd', mu=mu, sd=sd)
+            gains_sd = pm.Deterministic('gains_sd', tt.exp(log_gains_sd))
             gains_raw = pm.Normal('gains_raw', shape=k)
             author_is = pm.Normal('author_is', shape=k)
             gains = pm.Deterministic('gains', gains_sd * gains_raw)
@@ -119,14 +124,19 @@ def build_model(data, algos, **params):
 
         # Define variations of gains over time
         gains_time_alpha = pm.HalfNormal('gains_time_alpha', sd=0.1)
-        if 'gains_time_sd_sd_trace_mu' in params:
-            mu = params.pop('gains_time_sd_sd_trace_mu')
-            sd = params.pop('gains_time_sd_sd_trace_sd')
-            BoundNormal = pm.Bound(pm.Normal, lower=0)
-            gains_time_sd_sd = BoundNormal('gains_time_sd_sd', mu=mu, sd=sd)
+        if 'log_gains_time_sd_sd_trace_mu' in params:
+            mu = params.pop('log_gains_time_sd_sd_trace_mu')
+            sd = params.pop('log_gains_time_sd_sd_trace_sd')
+            log_gains_time_sd_sd = pm.Normal(
+                'log_gains_time_sd_sd', mu=mu, sd=sd)
+            gains_time_sd_sd = pm.Deterministic(
+                'gains_time_sd_sd', tt.exp(log_gains_time_sd_sd))
         else:
-            gains_time_sd_sd = pm.HalfStudentT('gains_time_sd_sd', nu=3, sd=0.1)
-        gains_time_sd_raw = pm.HalfStudentT('gains_time_sd_raw', nu=3, sd=1, shape=k)
+            gains_time_sd_sd = pm.HalfStudentT(
+                'gains_time_sd_sd', nu=3, beta=0.1)
+            pm.Deterministic('log_gains_time_sd_sd', tt.log(gains_time_sd_sd))
+        gains_time_sd_raw = pm.HalfStudentT(
+            'gains_time_sd_raw', nu=3, beta=1, shape=k)
         gains_time_sd = pm.Deterministic(
             'gains_time_sd', gains_time_sd_sd * gains_time_sd_raw)
         gains_time_raw = GPExponential(
@@ -163,6 +173,7 @@ def build_model(data, algos, **params):
             'gains_raw': ('algo',),
             'gains_time_sd_raw': ('algo',),
             'gains_time_sd': ('algo',),
+            'log_gains_time_sd': ('algo',),
             'gains_time_raw': ('algo', 'time_raw_gains'),
             'gains_time': ('algo', 'time'),
         }
@@ -230,7 +241,8 @@ class FitResult:
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
 
-    def plot_prob(self, algos=None, ax=None, sort=True, rope=False, rope_upper=.05, rope_lower=None):
+    def plot_prob(self, algos=None, ax=None, sort=True, rope=False,
+                  rope_upper=.05, rope_lower=None):
         if rope:
             prob_func = partial(self.gains_rope, rope_upper, lower=rope_lower)
         else:
@@ -328,10 +340,21 @@ def fit_population(data, algos, sampler_args=None, save_data=True,
 _TRACE_PARAM_NAMES = {
     'normal': (
         'trace-normal',
-        ['gains_sd', 'gains_time_sd_sd']),
+        ['log_gains_sd', 'log_gains_time_sd_sd']),
     'exponential': (
         'trace-exponential',
-        ['gains_sd', 'gains_time_sd_sd']
+        ['log_gains_sd', 'log_gains_time_sd_sd']
+    )
+}
+
+
+_DEFAULT_SHRINKAGE = {
+    'default': (
+        'trace-exponential',
+        {
+            'log_gains_sd': (-3.5, 0.2),
+            'log_gains_time_sd_sd': (-3, 1),
+        }
     )
 }
 
@@ -378,9 +401,19 @@ def fit_single(data, algos, population_fit=None, sampler_args=None, seed=None,
         raise ValueError('Can not use different shrinkage type in population '
                          'and single algo fit.')
 
-    if shrinkage not in _TRACE_PARAM_NAMES:
-        raise ValueError('Can not fit single algo for shrinkage %s' % shrinkage)
-    shrinkage, param_names = _TRACE_PARAM_NAMES[shrinkage]
+    if shrinkage in _TRACE_PARAM_NAMES:
+        shrinkage, param_names = _TRACE_PARAM_NAMES[shrinkage]
+    elif shrinkage in _DEFAULT_SHRINKAGE:
+        warnings.warn('The default shrinkage is only a preview. The values '
+                      '*will* change in the future.')
+        shrinkage, param_defaults = _DEFAULT_SHRINKAGE[shrinkage]
+        param_names = param_defaults.keys()
+        for name in param_defaults:
+            mu, sd = param_defaults[name]
+            params.setdefault(name + '_trace_mu', float(mu))
+            params.setdefault(name + '_trace_sd', float(sd))
+    else:
+        raise ValueError('Unknown shrinkage %s' % shrinkage)
 
     for name in param_names:
         name_mu = name + '_trace_mu'
