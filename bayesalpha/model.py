@@ -23,49 +23,106 @@ _PARAM_DEFAULTS = {
 }
 
 
-def build_model(data, algos, **params):
-    data = data.fillna(0.)
-    params = params.copy()
+class ModelBuilder(object):
+    def __init__(self, data, algos, **params):
+        self.data = data
+        # The build functions pop parameters they use
+        self.params = params.copy()
+        self.algos = algos
+        # The build functions add items when appropriate
+        self.coords = {
+            'algo': data.columns,
+            'time': data.index,
+        }
+        # The build functions add items when appropriate
+        self.dims = {}
+        self.n_algos = len(data.columns)
+        self.n_time = len(data.index)
 
-    is_author_is = np.zeros(data.shape, dtype=np.int8)
-    for i, algo in enumerate(data):
-        if algo not in algos.index or pd.isnull(algos.created_at.loc[algo]):
-            raise ValueError('No `created_at` value for algo %s' % algo)
-        is_author_is[:, i] = data.index < algos.created_at.loc[algo]
+        self.model = pm.Model()
+        with self.model:
+            in_sample = self._build_in_sample()
+            Bx_log_vlt, Bx_gains = self._build_splines()
 
-    duration = data.index[-1] - data.index[0]
+            vlt = self._build_volatility(Bx_log_vlt)
 
-    n, k = data.shape
+            gains_mu = self._build_gains_mu(in_sample)
+            gains_time = self._build_gains_time(Bx_gains)
 
-    # Find knot positions for gains and vlt splines
-    n_knots_vlt = duration.days // 5
-    time_vlt = np.linspace(0, 1, n)
-    Bx_log_vlt = bspline_basis(n_knots_vlt, time_vlt)
-    Bx_log_vlt = sparse.csr_matrix(Bx_log_vlt)
+            mu = (gains_mu + gains_time) * vlt
 
-    n_knots_gains = duration.days // 10
-    time_gains = np.linspace(0, 1, n)
-    Bx_gains = bspline_basis(n_knots_gains, time_gains)
-    Bx_gains = sparse.csr_matrix(Bx_gains)
+            self._build_likelihood(mu, vlt, observed=data.values.T)
 
-    with pm.Model() as model:
-        Bx_log_vlt_ = theano.sparse.as_sparse_variable(Bx_log_vlt)
-        Bx_gains_ = theano.sparse.as_sparse_variable(Bx_gains)
+        if self.params:
+            raise ValueError('Unused params: %s' % params.keys())
 
-        # Model the log volatility as gauss process with splines interpolation
+    def _build_in_sample(self):
+        data, algos = self.data, self.algos
+        is_author_is = np.zeros(data.shape, dtype=np.int8)
+        for i, algo in enumerate(data):
+            isnull = pd.isnull(algos.created_at.loc[algo])
+            if algo not in algos.index or isnull:
+                raise ValueError('No `created_at` value for algo %s' % algo)
+            is_author_is[:, i] = data.index < algos.created_at.loc[algo]
+        return is_author_is
+
+    def _build_splines(self):
+        data = self.data
+        n, k = data.shape
+
+        duration = data.index[-1] - data.index[0]
+
+        # Find knot positions for gains and vlt splines
+        n_knots_vlt = duration.days // 5
+        time_vlt = np.linspace(0, 1, n)
+        Bx_log_vlt = bspline_basis(n_knots_vlt, time_vlt)
+        Bx_log_vlt = sparse.csr_matrix(Bx_log_vlt)
+
+        n_knots_gains = duration.days // 10
+        time_gains = np.linspace(0, 1, n)
+        Bx_gains = bspline_basis(n_knots_gains, time_gains)
+        Bx_gains = sparse.csr_matrix(Bx_gains)
+
+        Bx_log_vlt = theano.sparse.as_sparse_variable(Bx_log_vlt)
+        Bx_gains = theano.sparse.as_sparse_variable(Bx_gains)
+
+        self.coords['time_raw_gains'] = list(range(n_knots_gains))
+        self.coords['time_raw_vlt'] = list(range(n_knots_vlt))
+
+        return Bx_log_vlt, Bx_gains
+
+    def _build_volatility(self, Bx_log_vlt):
+        k = self.n_algos
+        n_knots_vlt = len(self.coords['time_raw_vlt'])
+
         log_vlt_time_alpha = pm.HalfNormal('log_vlt_time_alpha', sd=0.1)
         log_vlt_time_sd = pm.HalfNormal('log_vlt_time_sd', sd=0.5, shape=k)
+        self.dims['log_vlt_time_sd'] = ('algo',)
+
         log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
+        self.dims['log_vlt_mu'] = ('algo',)
         log_vlt_time_raw = GPExponential(
             'log_vlt_time_raw', mu=0, alpha=log_vlt_time_alpha,
             sigma=1, shape=(k, n_knots_vlt))
+        self.dims['log_vlt_time_raw'] = ('algo', 'time_raw_vlt')
         log_vlt_raw = (log_vlt_mu[:, None]
-            + log_vlt_time_sd[:, None] * log_vlt_time_raw)
-        log_vlt = theano.sparse.dot(Bx_log_vlt_, log_vlt_raw.T).T
+                       + log_vlt_time_sd[:, None] * log_vlt_time_raw)
+        log_vlt = theano.sparse.dot(Bx_log_vlt, log_vlt_raw.T).T
         pm.Deterministic('log_vlt', log_vlt)
+        self.dims['log_vlt'] = ('algo', 'time')
         vlt = tt.exp(log_vlt)
+        return vlt
 
-        shrinkage = params.pop('shrinkage')
+    def _build_gains_mu(self, is_author_is):
+        self.dims.update({
+            'gains_theta': ('algo',),
+            'gains_eta': ('algo',),
+            'author_is': ('algo',),
+            'gains': ('algo',),
+            'gains_raw': ('algo',),
+        })
+        shrinkage = self.params.pop('shrinkage')
+        k = self.n_algos
 
         # Define shrinkage model on the long-term gains
         if shrinkage == 'exponential-mix':
@@ -103,8 +160,8 @@ def build_model(data, algos, **params):
             gains = pm.Deterministic('gains', gains_sd * gains_raw)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'trace-exponential':
-            mu = params.pop('log_gains_sd_trace_mu')
-            sd = params.pop('log_gains_sd_trace_sd')
+            mu = self.params.pop('log_gains_sd_trace_mu')
+            sd = self.params.pop('log_gains_sd_trace_sd')
             log_gains_sd = pm.Normal('log_gains_sd', mu=mu, sd=sd)
             gains_sd = pm.Deterministic('gains_sd', tt.exp(log_gains_sd))
             gains_raw = pm.Laplace('gains_raw', mu=0, b=1, shape=k)
@@ -112,8 +169,8 @@ def build_model(data, algos, **params):
             gains = pm.Deterministic('gains', gains_sd * gains_raw)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'trace-normal':
-            mu = params.pop('log_gains_sd_trace_mu')
-            sd = params.pop('log_gains_sd_trace_sd')
+            mu = self.params.pop('log_gains_sd_trace_mu')
+            sd = self.params.pop('log_gains_sd_trace_sd')
             log_gains_sd = pm.Normal('log_gains_sd', mu=mu, sd=sd)
             gains_sd = pm.Deterministic('gains_sd', tt.exp(log_gains_sd))
             gains_raw = pm.Normal('gains_raw', shape=k)
@@ -123,11 +180,23 @@ def build_model(data, algos, **params):
         else:
             raise ValueError('Unknown gains model: %s' % shrinkage)
 
-        # Define variations of gains over time
+        return gains_all.T
+
+    def _build_gains_time(self, Bx_gains):
+        self.dims.update({
+            'gains_time_sd_raw': ('algo',),
+            'gains_time_sd': ('algo',),
+            'log_gains_time_sd': ('algo',),
+            'gains_time_raw': ('algo', 'time_raw_gains'),
+            'gains_time': ('algo', 'time'),
+        })
+        k = self.n_algos
+        n_knots_gains = len(self.coords['time_raw_gains'])
+
         gains_time_alpha = pm.HalfNormal('gains_time_alpha', sd=0.1)
-        if 'log_gains_time_sd_sd_trace_mu' in params:
-            mu = params.pop('log_gains_time_sd_sd_trace_mu')
-            sd = params.pop('log_gains_time_sd_sd_trace_sd')
+        if 'log_gains_time_sd_sd_trace_mu' in self.params:
+            mu = self.params.pop('log_gains_time_sd_sd_trace_mu')
+            sd = self.params.pop('log_gains_time_sd_sd_trace_sd')
             log_gains_time_sd_sd = pm.Normal(
                 'log_gains_time_sd_sd', mu=mu, sd=sd)
             gains_time_sd_sd = pm.Deterministic(
@@ -144,48 +213,23 @@ def build_model(data, algos, **params):
             'gains_time_raw', mu=0, alpha=gains_time_alpha,
             sigma=1, shape=(k, n_knots_gains))
         gains_time = gains_time_sd[:, None] * gains_time_raw
-        gains_time = theano.sparse.dot(Bx_gains_, gains_time.T).T
+        gains_time = theano.sparse.dot(Bx_gains, gains_time.T).T
         pm.Deterministic('gains_time', gains_time)
+        return gains_time
 
-        mu = (gains_all.T + gains_time) * vlt
-
-        observed = data.values.T
-        NormalNonZero('y', mu=mu, sd=vlt, observed=observed)
-        if save_mu:
+    def _build_likelihood(self, mu, sd, observed):
+        NormalNonZero('y', mu=mu, sd=sd, observed=observed)
+        if self.params.pop('save_mu', False):
+            self.dims['mu'] = ('algo', 'time')
             pm.Deterministic('mu', mu)
-        if save_vlt:
-            pm.Deterministic('vlt', vlt)
+        if self.params.pop('save_vlt', False):
+            self.dims['vlt'] = ('algo', 'time')
+            pm.Deterministic('vlt', sd)
 
-        if params:
-            raise ValueError('Unused params: %s' % params.keys())
 
-        coords = {
-            'algo': data.columns,
-            'time': data.index,
-            'time_raw_gains': list(range(n_knots_gains)),
-            'time_raw_vlt': list(range(n_knots_vlt)),
-        }
-
-        dims = {
-            'log_vlt_time_sd': ('algo',),
-            'log_vlt_mu': ('algo',),
-            'log_vlt_time_raw': ('algo', 'time_raw_vlt'),
-            'log_vlt': ('algo', 'time'),
-            'gains_theta': ('algo',),
-            'gains_eta': ('algo',),
-            'author_is': ('algo',),
-            'gains': ('algo',),
-            'gains_raw': ('algo',),
-            'gains_time_sd_raw': ('algo',),
-            'gains_time_sd': ('algo',),
-            'log_gains_time_sd': ('algo',),
-            'gains_time_raw': ('algo', 'time_raw_gains'),
-            'gains_time': ('algo', 'time'),
-            'mu': ('algo', 'time'),
-            'vlt': ('algo', 'time'),
-        }
-
-        return model, coords, dims
+def build_model(data, algos, **params):
+    builder = ModelBuilder(data, algos, **params)
+    return builder.model, builder.coords, builder.dims
 
 
 class FitResult:
@@ -286,35 +330,52 @@ class FitResult:
         for chain in self.trace.chain:
             for sample in self.trace.sample:
                 data = {}
-                for var in self.trace:
-                    data[var] = self.trace[var].values
+                for var in self.trace.data_vars:
+                    if var.startswith('_'):
+                        continue
+                    vals = self.trace[var].sel(chain=chain, sample=sample)
+                    data[var] = vals.values
                 yield (chain, sample), data
 
     def predict(self, n_days):
-        start = self.trace.time[-1] + pd.tseries.offsets.BDay(1)
+        warnings.warn('The interface of predict will change...')
+        start = pd.Timestamp(self.trace.time[0].values)
+        start += pd.tseries.offsets.BDay(1)
         end_ = start + pd.tseries.offsets.BDay(2 * n_days)
         index = pd.date_range(start, end_, freq='B')[:n_days]
-        columns = self.trace.algos
+        columns = self.trace.algo
 
         data = pd.DataFrame(index=index, columns=columns)
-        algos = self.trace._algos.to_dataframe().copy()
+        data.values[...] = 0.
+        algos = self.trace._algos.to_pandas().copy()
         algos['created_at'] = start
-        model, *_ = build_model(data, algos, True, True, **self.params)
+        params = self.params.copy()
+        params['save_mu'] = True
+        params['save_vlt'] = True
+        model = ModelBuilder(data, algos, **params)
 
+        n_gains = len(model.coords['time_raw_gains'])
+        n_vlt = len(model.coords['time_raw_vlt'])
+        n_algos = model.n_algos
         resample_vars = {
-            'log_vlt_time_raw': np.random.randn,
-            'gains_time_raw': np.random.randn,
+            'log_vlt_time_raw': lambda: np.random.randn(n_algos, n_vlt),
+            'gains_time_raw': lambda: np.random.randn(n_algos, n_gains),
         }
         compute_vars = ['mu', 'vlt']
-        outputs = [getattr(model, var) for var in compute_vars]
-        vals_func = theano.function(model.free_RVs, outputs)
+        delete_vars = ['gains_time', 'log_vlt']
+        input_vars = [var for var in self.trace.data_vars
+                      if not var.startswith('_') and var not in delete_vars]
+        outputs = [getattr(model.model, var) for var in compute_vars]
+        inputs = [getattr(model.model, var) for var in input_vars]
+        vals_func = theano.function(inputs, outputs, on_unused_input='ignore')
 
         predictions = []
-        for (chain, sample), point in self._points:
+        for (chain, sample), point in self._points():
             for var, draw in resample_vars.items():
-                point[var] = draw(*point[var].shape)
-            mu, sd = vals_func(point)
-            returns = stats.normal(loc=mu, scale=sd).rvs()
+                point[var] = draw()
+            point = {var: point[var] for var in input_vars}
+            mu, sd = vals_func(**point)
+            returns = stats.norm(loc=mu, scale=sd).rvs().T
             returns = pd.DataFrame(returns, index=index, columns=columns)
             predictions.append(returns)
         return predictions
