@@ -2,7 +2,7 @@ from functools import partial
 import warnings
 
 import numpy as np
-from scipy import sparse
+from scipy import sparse, stats
 import theano
 import theano.tensor as tt
 import pymc3 as pm
@@ -59,9 +59,10 @@ def build_model(data, algos, **params):
         log_vlt_time_raw = GPExponential(
             'log_vlt_time_raw', mu=0, alpha=log_vlt_time_alpha,
             sigma=1, shape=(k, n_knots_vlt))
-        log_vlt_raw = log_vlt_mu[:, None] + log_vlt_time_sd[:, None] * log_vlt_time_raw
+        log_vlt_raw = (log_vlt_mu[:, None]
+            + log_vlt_time_sd[:, None] * log_vlt_time_raw)
         log_vlt = theano.sparse.dot(Bx_log_vlt_, log_vlt_raw.T).T
-        log_vlt = pm.Deterministic('log_vlt', log_vlt)
+        pm.Deterministic('log_vlt', log_vlt)
         vlt = tt.exp(log_vlt)
 
         shrinkage = params.pop('shrinkage')
@@ -144,12 +145,16 @@ def build_model(data, algos, **params):
             sigma=1, shape=(k, n_knots_gains))
         gains_time = gains_time_sd[:, None] * gains_time_raw
         gains_time = theano.sparse.dot(Bx_gains_, gains_time.T).T
-        gains_time = pm.Deterministic('gains_time', gains_time)
+        pm.Deterministic('gains_time', gains_time)
 
         mu = (gains_all.T + gains_time) * vlt
 
         observed = data.values.T
         NormalNonZero('y', mu=mu, sd=vlt, observed=observed)
+        if save_mu:
+            pm.Deterministic('mu', mu)
+        if save_vlt:
+            pm.Deterministic('vlt', vlt)
 
         if params:
             raise ValueError('Unused params: %s' % params.keys())
@@ -176,6 +181,8 @@ def build_model(data, algos, **params):
             'log_gains_time_sd': ('algo',),
             'gains_time_raw': ('algo', 'time_raw_gains'),
             'gains_time': ('algo', 'time'),
+            'mu': ('algo', 'time'),
+            'vlt': ('algo', 'time'),
         }
 
         return model, coords, dims
@@ -274,6 +281,43 @@ class FitResult:
             .mean(['sample', 'chain'])
             .to_series()
             .rename('gains_rope'))
+
+    def _points(self):
+        for chain in self.trace.chain:
+            for sample in self.trace.sample:
+                data = {}
+                for var in self.trace:
+                    data[var] = self.trace[var].values
+                yield (chain, sample), data
+
+    def predict(self, n_days):
+        start = self.trace.time[-1] + pd.tseries.offsets.BDay(1)
+        end_ = start + pd.tseries.offsets.BDay(2 * n_days)
+        index = pd.date_range(start, end_, freq='B')[:n_days]
+        columns = self.trace.algos
+
+        data = pd.DataFrame(index=index, columns=columns)
+        algos = self.trace._algos.to_dataframe().copy()
+        algos['created_at'] = start
+        model, *_ = build_model(data, algos, True, True, **self.params)
+
+        resample_vars = {
+            'log_vlt_time_raw': np.random.randn,
+            'gains_time_raw': np.random.randn,
+        }
+        compute_vars = ['mu', 'vlt']
+        outputs = [getattr(model, var) for var in compute_vars]
+        vals_func = theano.function(model.free_RVs, outputs)
+
+        predictions = []
+        for (chain, sample), point in self._points:
+            for var, draw in resample_vars.items():
+                point[var] = draw(*point[var].shape)
+            mu, sd = vals_func(point)
+            returns = stats.normal(loc=mu, scale=sd).rvs()
+            returns = pd.DataFrame(returns, index=index, columns=columns)
+            predictions.append(returns)
+        return predictions
 
 
 def fit_population(data, algos, sampler_args=None, save_data=True,
