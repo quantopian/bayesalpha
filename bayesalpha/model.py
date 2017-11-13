@@ -412,10 +412,10 @@ def fit_population(data, algos, sampler_args=None, save_data=True,
     else:
         sampler_args = sampler_args.copy()
     if seed is None:
-        seed = random.getrandbits(32)
+        seed = int(random.getrandbits(32))
     if 'random_seed' in sampler_args:
         raise ValueError('Can not specify `random_seed`.')
-    sampler_args['random_seed'] = seed
+    sampler_args['random_seed'] = int(seed)
 
     model, coords, dims = build_model(data, algos, **params)
     timestamp = datetime.isoformat(datetime.now())
