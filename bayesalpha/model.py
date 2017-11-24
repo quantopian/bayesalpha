@@ -344,9 +344,7 @@ class FitResult:
     def predict(self, n_days):
         warnings.warn('The interface of predict will change...')
         start = pd.Timestamp(self.trace.time[0].values)
-        start += pd.tseries.offsets.BDay(1)
-        end_ = start + pd.tseries.offsets.BDay(2 * n_days)
-        index = pd.date_range(start, end_, freq='B')[:n_days]
+        index = pd.date_range(start, periods=n_days, freq='B')
         columns = self.trace.algo
 
         data = pd.DataFrame(index=index, columns=columns)
