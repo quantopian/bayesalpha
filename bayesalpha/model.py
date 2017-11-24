@@ -14,6 +14,7 @@ import random
 import pandas as pd
 
 from bayesalpha.dists import bspline_basis, GPExponential, NormalNonZero
+from bayesalpha.dists import dot as sparse_dot
 from bayesalpha.serialize import to_xarray
 from bayesalpha._version import get_versions
 from bayesalpha.plotting import plot_horizontal_dots
@@ -107,7 +108,8 @@ class ModelBuilder(object):
         self.dims['log_vlt_time_raw'] = ('algo', 'time_raw_vlt')
         log_vlt_raw = (log_vlt_mu[:, None]
                        + log_vlt_time_sd[:, None] * log_vlt_time_raw)
-        log_vlt = theano.sparse.dot(Bx_log_vlt, log_vlt_raw.T).T
+        log_vlt = sparse_dot(Bx_log_vlt, log_vlt_raw.T)
+
         pm.Deterministic('log_vlt', log_vlt)
         self.dims['log_vlt'] = ('algo', 'time')
         vlt = tt.exp(log_vlt)
@@ -213,7 +215,8 @@ class ModelBuilder(object):
             'gains_time_raw', mu=0, alpha=gains_time_alpha,
             sigma=1, shape=(k, n_knots_gains))
         gains_time = gains_time_sd[:, None] * gains_time_raw
-        gains_time = theano.sparse.dot(Bx_gains, gains_time.T).T
+        gains_time = sparse_dot(Bx_gains, gains_time.T)
+
         pm.Deterministic('gains_time', gains_time)
         return gains_time
 
