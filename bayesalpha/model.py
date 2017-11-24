@@ -383,7 +383,7 @@ class FitResult:
         return predictions
 
 
-def fit_population(data, algos, sampler_args=None, save_data=True,
+def fit_population(data, algos=None, sampler_args=None, save_data=True,
                    seed=None, **params):
     """Fit the model to daily returns.
 
@@ -408,6 +408,10 @@ def fit_population(data, algos, sampler_args=None, save_data=True,
     params_ = _PARAM_DEFAULTS.copy()
     params_.update(params)
     params = params_
+
+    if algos is None:
+        algos = pd.DataFrame(columns=['created_at'], index=data.columns)
+        algos['created_at'] = data.index[0]
 
     if sampler_args is None:
         sampler_args = {}
@@ -466,8 +470,8 @@ _DEFAULT_SHRINKAGE = {
 }
 
 
-def fit_single(data, algos, population_fit=None, sampler_args=None, seed=None,
-               **params):
+def fit_single(data, algos=None, population_fit=None, sampler_args=None,
+               seed=None, **params):
     """Fit the model to algorithms and use an earlier run for hyperparameters.
 
     Use a model fit with a large number of algorithms to get estimates
