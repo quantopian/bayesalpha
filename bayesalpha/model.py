@@ -109,7 +109,7 @@ class ModelBuilder(object):
         self.dims['log_vlt_time_raw'] = ('algo', 'time_raw_vlt')
         log_vlt_raw = (log_vlt_mu[:, None]
                        + log_vlt_time_sd[:, None] * log_vlt_time_raw)
-        log_vlt = sparse_dot(Bx_log_vlt, log_vlt_raw.T)
+        log_vlt = sparse_dot(Bx_log_vlt, log_vlt_raw.T).T
 
         pm.Deterministic('log_vlt', log_vlt)
         self.dims['log_vlt'] = ('algo', 'time')
@@ -216,7 +216,7 @@ class ModelBuilder(object):
             'gains_time_raw', mu=0, alpha=gains_time_alpha,
             sigma=1, shape=(k, n_knots_gains))
         gains_time = gains_time_sd[:, None] * gains_time_raw
-        gains_time = sparse_dot(Bx_gains, gains_time.T)
+        gains_time = sparse_dot(Bx_gains, gains_time.T).T
 
         pm.Deterministic('gains_time', gains_time)
         return gains_time
