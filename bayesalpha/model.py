@@ -26,6 +26,7 @@ _PARAM_DEFAULTS = {
 
 class ModelBuilder(object):
     def __init__(self, data, algos, **params):
+        data = data.fillna(0.)
         self.data = data
         # The build functions pop parameters they use
         self.params = params.copy()
