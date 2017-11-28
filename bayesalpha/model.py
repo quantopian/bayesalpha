@@ -391,24 +391,24 @@ class FitResult:
     def _points(self, include_transformed=True):
         for chain in self.trace.chain:
             for sample in self.trace.sample:
+                vals = self.trace.sel(chain=chain, sample=sample)
                 data = {}
                 for var in self.trace.data_vars:
                     if not include_transformed and var.startswith('_'):
                         continue
-                    vals = self.trace[var].sel(chain=chain, sample=sample)
-                    data[var] = vals.values
+                    data[var] = vals[var].values
                 yield (chain, sample), data
 
     def _random_point_iter(self, include_transformed=True):
         while True:
-            chain = np.random.choice(self.trace.chain)
-            sample = np.random.choice(self.trace.sample)
+            chain = np.random.randint(len(self.trace.chain))
+            sample = np.random.randint(len(self.trace.sample))
             data = {}
+            vals = self.trace.isel(chain=chain, sample=sample)
             for var in self.trace.data_vars:
                 if not include_transformed and var.startswith('_'):
                     continue
-                vals = self.trace[var].sel(chain=chain, sample=sample)
-                data[var] = vals.values
+                data[var] = vals[var].values
             yield data
 
     def rebuild_model(self, data=None, algos=None, **extra_params):
