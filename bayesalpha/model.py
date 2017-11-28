@@ -25,22 +25,32 @@ _PARAM_DEFAULTS = {
 
 
 class ModelBuilder(object):
-    def __init__(self, data, algos, predict=False, **params):
+    def __init__(self, data, algos, factors=None, predict=False, **params):
         data = data.fillna(0.)
         self._predict = predict
         self.data = data
         # The build functions pop parameters they use
         self.params = params.copy()
         self.algos = algos
+        if factors is None:
+            factors = pd.DataFrame(index=data.index, columns=[])
+            factors.columns.name = 'factor'
+
         # The build functions add items when appropriate
         self.coords = {
             'algo': data.columns,
             'time': data.index,
+            'factor': factors.columns
         }
         # The build functions add items when appropriate
         self.dims = {}
         self.n_algos = len(data.columns)
         self.n_time = len(data.index)
+        self.n_factors = len(factors.columns)
+        self.factors = factors
+
+        if factors is not None and any(factors.index != data.index):
+            raise ValueError('Factors must have the same index as data.')
 
         self.model = pm.Model()
         with self.model:
@@ -53,6 +63,9 @@ class ModelBuilder(object):
             gains_time = self._build_gains_time(Bx_gains)
 
             mu = (gains_mu + gains_time) * vlt
+            if len(factors.columns) > 0 and not self._predict:
+                factors_mu = self._build_factors()
+                mu = mu + factors_mu
 
             self._build_likelihood(mu, vlt, observed=data.values.T)
 
@@ -230,6 +243,16 @@ class ModelBuilder(object):
         if self._predict:
             self.dims['vlt'] = ('algo', 'time')
             pm.Deterministic('vlt', sd)
+
+    def _build_factors(self):
+        self.dims.update({
+            'factor_algo': ('factor', 'algo'),
+        })
+        factors = self.factors
+        n_algos, n_factors = self.n_algos, self.n_factors
+        factor_algo = pm.StudentT('factor_algo', nu=3, mu=0, sd=2,
+                                  shape=(n_factors, n_algos))
+        return (factor_algo[:, None, :] * factors.values[None, :, :]).sum(0).T
 
     def make_predict_function(self):
         if not self._predict:
@@ -431,7 +454,7 @@ class FitResult:
 
 
 def fit_population(data, algos=None, sampler_args=None, save_data=True,
-                   seed=None, **params):
+                   seed=None, factors=None, **params):
     """Fit the model to daily returns.
 
     Parameters
@@ -470,7 +493,7 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
         raise ValueError('Can not specify `random_seed`.')
     sampler_args['random_seed'] = int(seed)
 
-    model, coords, dims = build_model(data, algos, **params)
+    model, coords, dims = build_model(data, algos, factors=factors, **params)
     timestamp = datetime.isoformat(datetime.now())
     with model:
         args = {} if sampler_args is None else sampler_args
@@ -492,6 +515,11 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
             trace['_algos'] = (('algo', 'algodata'), algos.loc[data.columns])
         except ValueError:
             warnings.warn('Could not save algo metadata, skipping.')
+        if factors is not None:
+            try:
+                trace['_factors'] = (('time', 'factor'), factors)
+            except ValueError:
+                warnings.warn('Could not save algo metadata, skipping.')
     return FitResult(trace)
 
 
@@ -518,7 +546,7 @@ _DEFAULT_SHRINKAGE = {
 
 
 def fit_single(data, algos=None, population_fit=None, sampler_args=None,
-               seed=None, **params):
+               seed=None, factors=None, **params):
     """Fit the model to algorithms and use an earlier run for hyperparameters.
 
     Use a model fit with a large number of algorithms to get estimates
@@ -586,7 +614,8 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
         params.setdefault(name_sd, float(trace_vals.std()))
 
     fit = fit_population(data, algos=algos, sampler_args=sampler_args,
-                         seed=seed, shrinkage=shrinkage, **params)
+                         seed=seed, shrinkage=shrinkage, factors=factors,
+                         **params)
     if population_fit is not None:
         parent = population_fit.trace
         fit.trace.attrs['parent-params'] = parent.attrs['params']
