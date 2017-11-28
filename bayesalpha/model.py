@@ -25,8 +25,9 @@ _PARAM_DEFAULTS = {
 
 
 class ModelBuilder(object):
-    def __init__(self, data, algos, **params):
+    def __init__(self, data, algos, predict=False, **params):
         data = data.fillna(0.)
+        self._predict = predict
         self.data = data
         # The build functions pop parameters they use
         self.params = params.copy()
@@ -223,12 +224,46 @@ class ModelBuilder(object):
 
     def _build_likelihood(self, mu, sd, observed):
         NormalNonZero('y', mu=mu, sd=sd, observed=observed)
-        if self.params.pop('save_mu', False):
+        if self._predict:
             self.dims['mu'] = ('algo', 'time')
             pm.Deterministic('mu', mu)
-        if self.params.pop('save_vlt', False):
+        if self._predict:
             self.dims['vlt'] = ('algo', 'time')
             pm.Deterministic('vlt', sd)
+
+    def make_predict_function(self):
+        if not self._predict:
+            raise ValueError('Model was not built for predictions.')
+
+        n_gains = len(self.coords['time_raw_gains'])
+        n_vlt = len(self.coords['time_raw_vlt'])
+        n_algos = self.n_algos
+        resample_vars = {
+            'log_vlt_time_raw': lambda: np.random.randn(n_algos, n_vlt),
+            'gains_time_raw': lambda: np.random.randn(n_algos, n_gains),
+        }
+        compute_vars = ['mu', 'vlt']
+        delete_vars = ['gains_time', 'log_vlt', 'mu', 'vlt']
+        input_vars = [var.name for var in self.model.unobserved_RVs
+                      if (not var.name.endswith('_')
+                          and var.name not in delete_vars)]
+        outputs = [getattr(self.model, var) for var in compute_vars]
+        inputs = [getattr(self.model, var) for var in input_vars]
+        vals_func = theano.function(inputs, outputs, on_unused_input='ignore')
+
+        algos = self.coords['algo']
+        time = self.coords['time']
+
+        def predict(point):
+            for var, draw in resample_vars.items():
+                point[var] = draw()
+            point = {var: point[var] for var in input_vars}
+            mu, sd = vals_func(**point)
+            returns = stats.norm(loc=mu, scale=sd).rvs()
+            returns = xr.DataArray(returns, coords=[algos, time])
+            return returns
+
+        return predict
 
 
 def build_model(data, algos, **params):
@@ -330,57 +365,69 @@ class FitResult:
             .to_series()
             .rename('gains_rope'))
 
-    def _points(self):
+    def _points(self, include_transformed=True):
         for chain in self.trace.chain:
             for sample in self.trace.sample:
                 data = {}
                 for var in self.trace.data_vars:
-                    if var.startswith('_'):
+                    if not include_transformed and var.startswith('_'):
                         continue
                     vals = self.trace[var].sel(chain=chain, sample=sample)
                     data[var] = vals.values
                 yield (chain, sample), data
 
-    def predict(self, n_days):
-        warnings.warn('The interface of predict will change...')
+    def _random_point_iter(self, include_transformed=True):
+        while True:
+            chain = np.random.choice(self.trace.chain)
+            sample = np.random.choice(self.trace.sample)
+            data = {}
+            for var in self.trace.data_vars:
+                if not include_transformed and var.startswith('_'):
+                    continue
+                vals = self.trace[var].sel(chain=chain, sample=sample)
+                data[var] = vals.values
+            yield data
+
+    def rebuild_model(self, data=None, algos=None, **extra_params):
+        """Return a ModelBuilder that recreates the original model."""
+        if data is None:
+            data = self.trace._data.to_pandas().copy()
+        if algos is None:
+            algos = self.trace._algos.to_pandas().copy()
+        params = self.params.copy()
+        params.update(extra_params)
+        return ModelBuilder(data, algos, **params)
+
+    def _make_prediction_model(self, n_days):
         start = pd.Timestamp(self.trace.time[0].values)
-        index = pd.date_range(start, periods=n_days, freq='B')
+        index = pd.date_range(start, periods=n_days, freq='B', name='time')
         columns = self.trace.algo
 
         data = pd.DataFrame(index=index, columns=columns)
         data.values[...] = 0.
         algos = self.trace._algos.to_pandas().copy()
         algos['created_at'] = start
-        params = self.params.copy()
-        params['save_mu'] = True
-        params['save_vlt'] = True
-        model = ModelBuilder(data, algos, **params)
+        return self.rebuild_model(data, algos, predict=True)
 
-        n_gains = len(model.coords['time_raw_gains'])
-        n_vlt = len(model.coords['time_raw_vlt'])
-        n_algos = model.n_algos
-        resample_vars = {
-            'log_vlt_time_raw': lambda: np.random.randn(n_algos, n_vlt),
-            'gains_time_raw': lambda: np.random.randn(n_algos, n_gains),
-        }
-        compute_vars = ['mu', 'vlt']
-        delete_vars = ['gains_time', 'log_vlt']
-        input_vars = [var for var in self.trace.data_vars
-                      if not var.startswith('_') and var not in delete_vars]
-        outputs = [getattr(model.model, var) for var in compute_vars]
-        inputs = [getattr(model.model, var) for var in input_vars]
-        vals_func = theano.function(inputs, outputs, on_unused_input='ignore')
-
-        predictions = []
-        for (chain, sample), point in self._points():
-            for var, draw in resample_vars.items():
-                point[var] = draw()
-            point = {var: point[var] for var in input_vars}
-            mu, sd = vals_func(**point)
-            returns = stats.norm(loc=mu, scale=sd).rvs().T
-            returns = pd.DataFrame(returns, index=index, columns=columns)
-            predictions.append(returns)
+    def predict(self, n_days):
+        model = self._make_prediction_model(n_days)
+        predict_func = model.make_predict_function()
+        n_chains, n_samples = len(self.trace.chain), len(self.trace.sample)
+        n_algos = len(self.trace.algo)
+        prediction_data = np.zeros((n_chains, n_samples, n_algos, n_days))
+        predictions = xr.DataArray(
+            prediction_data,
+            coords=[self.trace.chain, self.trace.sample,
+                    self.trace.algo, model.coords['time']])
+        for (chain, sample), point in self._points(include_transformed=False):
+            predictions.loc[chain, sample, :, :] = predict_func(point)
         return predictions
+
+    def prediction_iter(self, n_days):
+        model = self._make_prediction_model(n_days)
+        predict_func = model.make_predict_function()
+        for point in self._random_point_iter(include_transformed=False):
+            yield predict_func(point)
 
 
 def fit_population(data, algos=None, sampler_args=None, save_data=True,
