@@ -25,21 +25,32 @@ _PARAM_DEFAULTS = {
 
 
 class ModelBuilder(object):
-    def __init__(self, data, algos, **params):
+    def __init__(self, data, algos, factors=None, predict=False, **params):
         data = data.fillna(0.)
+        self._predict = predict
         self.data = data
         # The build functions pop parameters they use
         self.params = params.copy()
         self.algos = algos
+        if factors is None:
+            factors = pd.DataFrame(index=data.index, columns=[])
+            factors.columns.name = 'factor'
+
         # The build functions add items when appropriate
         self.coords = {
             'algo': data.columns,
             'time': data.index,
+            'factor': factors.columns
         }
         # The build functions add items when appropriate
         self.dims = {}
         self.n_algos = len(data.columns)
         self.n_time = len(data.index)
+        self.n_factors = len(factors.columns)
+        self.factors = factors
+
+        if factors is not None and any(factors.index != data.index):
+            raise ValueError('Factors must have the same index as data.')
 
         self.model = pm.Model()
         with self.model:
@@ -52,6 +63,9 @@ class ModelBuilder(object):
             gains_time = self._build_gains_time(Bx_gains)
 
             mu = (gains_mu + gains_time) * vlt
+            if len(factors.columns) > 0 and not self._predict:
+                factors_mu = self._build_factors()
+                mu = mu + factors_mu
 
             self._build_likelihood(mu, vlt, observed=data.values.T)
 
@@ -223,12 +237,56 @@ class ModelBuilder(object):
 
     def _build_likelihood(self, mu, sd, observed):
         NormalNonZero('y', mu=mu, sd=sd, observed=observed)
-        if self.params.pop('save_mu', False):
+        if self._predict:
             self.dims['mu'] = ('algo', 'time')
             pm.Deterministic('mu', mu)
-        if self.params.pop('save_vlt', False):
+        if self._predict:
             self.dims['vlt'] = ('algo', 'time')
             pm.Deterministic('vlt', sd)
+
+    def _build_factors(self):
+        self.dims.update({
+            'factor_algo': ('factor', 'algo'),
+        })
+        factors = self.factors
+        n_algos, n_factors = self.n_algos, self.n_factors
+        factor_algo = pm.StudentT('factor_algo', nu=3, mu=0, sd=2,
+                                  shape=(n_factors, n_algos))
+        return (factor_algo[:, None, :] * factors.values[None, :, :]).sum(0).T
+
+    def make_predict_function(self):
+        if not self._predict:
+            raise ValueError('Model was not built for predictions.')
+
+        n_gains = len(self.coords['time_raw_gains'])
+        n_vlt = len(self.coords['time_raw_vlt'])
+        n_algos = self.n_algos
+        resample_vars = {
+            'log_vlt_time_raw': lambda: np.random.randn(n_algos, n_vlt),
+            'gains_time_raw': lambda: np.random.randn(n_algos, n_gains),
+        }
+        compute_vars = ['mu', 'vlt']
+        delete_vars = ['gains_time', 'log_vlt', 'mu', 'vlt']
+        input_vars = [var.name for var in self.model.unobserved_RVs
+                      if (not var.name.endswith('_')
+                          and var.name not in delete_vars)]
+        outputs = [getattr(self.model, var) for var in compute_vars]
+        inputs = [getattr(self.model, var) for var in input_vars]
+        vals_func = theano.function(inputs, outputs, on_unused_input='ignore')
+
+        algos = self.coords['algo']
+        time = self.coords['time']
+
+        def predict(point):
+            for var, draw in resample_vars.items():
+                point[var] = draw()
+            point = {var: point[var] for var in input_vars}
+            mu, sd = vals_func(**point)
+            returns = stats.norm(loc=mu, scale=sd).rvs()
+            returns = xr.DataArray(returns, coords=[algos, time])
+            return returns
+
+        return predict
 
 
 def build_model(data, algos, **params):
@@ -330,61 +388,73 @@ class FitResult:
             .to_series()
             .rename('gains_rope'))
 
-    def _points(self):
+    def _points(self, include_transformed=True):
         for chain in self.trace.chain:
             for sample in self.trace.sample:
+                vals = self.trace.sel(chain=chain, sample=sample)
                 data = {}
                 for var in self.trace.data_vars:
-                    if var.startswith('_'):
+                    if not include_transformed and var.startswith('_'):
                         continue
-                    vals = self.trace[var].sel(chain=chain, sample=sample)
-                    data[var] = vals.values
+                    data[var] = vals[var].values
                 yield (chain, sample), data
 
-    def predict(self, n_days):
-        warnings.warn('The interface of predict will change...')
+    def _random_point_iter(self, include_transformed=True):
+        while True:
+            chain = np.random.randint(len(self.trace.chain))
+            sample = np.random.randint(len(self.trace.sample))
+            data = {}
+            vals = self.trace.isel(chain=chain, sample=sample)
+            for var in self.trace.data_vars:
+                if not include_transformed and var.startswith('_'):
+                    continue
+                data[var] = vals[var].values
+            yield data
+
+    def rebuild_model(self, data=None, algos=None, **extra_params):
+        """Return a ModelBuilder that recreates the original model."""
+        if data is None:
+            data = self.trace._data.to_pandas().copy()
+        if algos is None:
+            algos = self.trace._algos.to_pandas().copy()
+        params = self.params.copy()
+        params.update(extra_params)
+        return ModelBuilder(data, algos, **params)
+
+    def _make_prediction_model(self, n_days):
         start = pd.Timestamp(self.trace.time[0].values)
-        index = pd.date_range(start, periods=n_days, freq='B')
+        index = pd.date_range(start, periods=n_days, freq='B', name='time')
         columns = self.trace.algo
 
         data = pd.DataFrame(index=index, columns=columns)
         data.values[...] = 0.
         algos = self.trace._algos.to_pandas().copy()
         algos['created_at'] = start
-        params = self.params.copy()
-        params['save_mu'] = True
-        params['save_vlt'] = True
-        model = ModelBuilder(data, algos, **params)
+        return self.rebuild_model(data, algos, predict=True)
 
-        n_gains = len(model.coords['time_raw_gains'])
-        n_vlt = len(model.coords['time_raw_vlt'])
-        n_algos = model.n_algos
-        resample_vars = {
-            'log_vlt_time_raw': lambda: np.random.randn(n_algos, n_vlt),
-            'gains_time_raw': lambda: np.random.randn(n_algos, n_gains),
-        }
-        compute_vars = ['mu', 'vlt']
-        delete_vars = ['gains_time', 'log_vlt']
-        input_vars = [var for var in self.trace.data_vars
-                      if not var.startswith('_') and var not in delete_vars]
-        outputs = [getattr(model.model, var) for var in compute_vars]
-        inputs = [getattr(model.model, var) for var in input_vars]
-        vals_func = theano.function(inputs, outputs, on_unused_input='ignore')
-
-        predictions = []
-        for (chain, sample), point in self._points():
-            for var, draw in resample_vars.items():
-                point[var] = draw()
-            point = {var: point[var] for var in input_vars}
-            mu, sd = vals_func(**point)
-            returns = stats.norm(loc=mu, scale=sd).rvs().T
-            returns = pd.DataFrame(returns, index=index, columns=columns)
-            predictions.append(returns)
+    def predict(self, n_days):
+        model = self._make_prediction_model(n_days)
+        predict_func = model.make_predict_function()
+        n_chains, n_samples = len(self.trace.chain), len(self.trace.sample)
+        n_algos = len(self.trace.algo)
+        prediction_data = np.zeros((n_chains, n_samples, n_algos, n_days))
+        predictions = xr.DataArray(
+            prediction_data,
+            coords=[self.trace.chain, self.trace.sample,
+                    self.trace.algo, model.coords['time']])
+        for (chain, sample), point in self._points(include_transformed=False):
+            predictions.loc[chain, sample, :, :] = predict_func(point)
         return predictions
+
+    def prediction_iter(self, n_days):
+        model = self._make_prediction_model(n_days)
+        predict_func = model.make_predict_function()
+        for point in self._random_point_iter(include_transformed=False):
+            yield predict_func(point)
 
 
 def fit_population(data, algos=None, sampler_args=None, save_data=True,
-                   seed=None, **params):
+                   seed=None, factors=None, **params):
     """Fit the model to daily returns.
 
     Parameters
@@ -423,7 +493,7 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
         raise ValueError('Can not specify `random_seed`.')
     sampler_args['random_seed'] = int(seed)
 
-    model, coords, dims = build_model(data, algos, **params)
+    model, coords, dims = build_model(data, algos, factors=factors, **params)
     timestamp = datetime.isoformat(datetime.now())
     with model:
         args = {} if sampler_args is None else sampler_args
@@ -445,6 +515,11 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
             trace['_algos'] = (('algo', 'algodata'), algos.loc[data.columns])
         except ValueError:
             warnings.warn('Could not save algo metadata, skipping.')
+        if factors is not None:
+            try:
+                trace['_factors'] = (('time', 'factor'), factors)
+            except ValueError:
+                warnings.warn('Could not save algo metadata, skipping.')
     return FitResult(trace)
 
 
@@ -471,7 +546,7 @@ _DEFAULT_SHRINKAGE = {
 
 
 def fit_single(data, algos=None, population_fit=None, sampler_args=None,
-               seed=None, **params):
+               seed=None, factors=None, **params):
     """Fit the model to algorithms and use an earlier run for hyperparameters.
 
     Use a model fit with a large number of algorithms to get estimates
@@ -539,7 +614,8 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
         params.setdefault(name_sd, float(trace_vals.std()))
 
     fit = fit_population(data, algos=algos, sampler_args=sampler_args,
-                         seed=seed, shrinkage=shrinkage, **params)
+                         seed=seed, shrinkage=shrinkage, factors=factors,
+                         **params)
     if population_fit is not None:
         parent = population_fit.trace
         fit.trace.attrs['parent-params'] = parent.attrs['params']
