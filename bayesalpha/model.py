@@ -12,6 +12,8 @@ import xarray as xr
 from datetime import datetime
 import random
 import pandas as pd
+import cvxpy
+import empyrical
 
 from bayesalpha.dists import bspline_basis, GPExponential, NormalNonZero
 from bayesalpha.dists import dot as sparse_dot
@@ -222,8 +224,7 @@ class ModelBuilder(object):
             gains_time_sd_sd = pm.HalfStudentT(
                 'gains_time_sd_sd', nu=3, sd=0.1)
             pm.Deterministic('log_gains_time_sd_sd', tt.log(gains_time_sd_sd))
-        gains_time_sd_raw = pm.HalfStudentT(
-            'gains_time_sd_raw', nu=3, sd=1, shape=k)
+        gains_time_sd_raw = pm.HalfNormal('gains_time_sd_raw', shape=k)
         gains_time_sd = pm.Deterministic(
             'gains_time_sd', gains_time_sd_sd * gains_time_sd_raw)
         gains_time_raw = GPExponential(
@@ -446,6 +447,21 @@ class FitResult:
             predictions.loc[chain, sample, :, :] = predict_func(point)
         return predictions
 
+    def predict_value(self, n_days):
+        model = self._make_prediction_model(n_days)
+        predict_func = model.make_predict_function()
+        n_chains, n_samples = len(self.trace.chain), len(self.trace.sample)
+        n_algos = len(self.trace.algo)
+        prediction_data = np.zeros((n_chains, n_samples, n_algos))
+        predictions = xr.DataArray(
+            prediction_data,
+            coords=[self.trace.chain, self.trace.sample, self.trace.algo])
+        for (chain, sample), point in self._points(include_transformed=False):
+            returns = predict_func(point)
+            cum_returns = empyrical.cum_returns_final(returns.to_pandas().T)
+            predictions.loc[chain, sample, :] = cum_returns
+        return predictions
+
     def prediction_iter(self, n_days):
         model = self._make_prediction_model(n_days)
         predict_func = model.make_predict_function()
@@ -521,6 +537,47 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
             except ValueError:
                 warnings.warn('Could not save algo metadata, skipping.')
     return FitResult(trace)
+
+
+class Optimizer(object):
+    def __init__(self, fit, n_days, lmda=None, factor_weights=None):
+        self._fit = fit
+        self._lmda = lmda
+        self._factor_weights = factor_weights
+        self._returns = fit.predict_value(n_days)
+        self._problem = self._build_problem()
+
+    def _build_problem(self):
+        n_predict = len(self._returns.chain) * len(self._returns.sample)
+        n_algos = len(self._returns.algo)
+        lmda = cvxpy.Parameter(sign='positive', name='lambda')
+        returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
+        weights = cvxpy.Variable(n_algos, name='weights')
+        portfolio_returns = returns * weights
+        loss_ret = cvxpy.exp(-lmda * portfolio_returns)
+        risk = cvxpy.sum_entries(loss_ret)
+        problem = cvxpy.Problem(
+            cvxpy.Minimize(risk),
+            [cvxpy.sum_entries(weights) == 1, weights >= 0])
+
+        lmda.value = self._lmda
+        predictions = self._returns.stack(prediction=('chain', 'sample'))
+        returns.value = predictions.values.T
+
+        self._lmda_p = lmda
+        self._factor_weights_p = None
+        self._weights_v = weights
+        return problem
+
+    def solve(self, lmda=None, factor_weights=None):
+        if lmda is not None:
+            self._lmda_p.value = lmda
+        if factor_weights is not None:
+            self._factor_weights_p.value = factor_weights
+        self._problem.solve()
+        if self._problem.status != 'optimal':
+            raise ValueError('Optimization did not converge.')
+        return self._weights_v.value.copy()
 
 
 _TRACE_PARAM_NAMES = {
