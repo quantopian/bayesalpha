@@ -433,33 +433,48 @@ class FitResult:
         algos['created_at'] = start
         return self.rebuild_model(data, algos, predict=True)
 
-    def predict(self, n_days):
+    def predict(self, n_days, n_repl=None):
         model = self._make_prediction_model(n_days)
         predict_func = model.make_predict_function()
-        n_chains, n_samples = len(self.trace.chain), len(self.trace.sample)
-        n_algos = len(self.trace.algo)
-        prediction_data = np.zeros((n_chains, n_samples, n_algos, n_days))
-        predictions = xr.DataArray(
-            prediction_data,
-            coords=[self.trace.chain, self.trace.sample,
-                    self.trace.algo, model.coords['time']])
+        coords = [self.trace.chain, self.trace.sample,
+                  self.trace.algo, model.coords['time']]
+        if n_repl is not None:
+            repl_coord = pd.RangeIndex(n_repl)
+            coords.append(repl_coord)
+        shape = [len(vals) for vals in coords]
+
+        prediction_data = np.zeros(shape)
+        predictions = xr.DataArray(prediction_data, coords=coords)
         for (chain, sample), point in self._points(include_transformed=False):
-            predictions.loc[chain, sample, :, :] = predict_func(point)
+            if n_repl is None:
+                predictions.loc[chain, sample, :, :] = predict_func(point)
+            else:
+                for repl in repl_coord:
+                    returns = predict_func(point)
+                    predictions.loc[chain, sample, :, :, repl] = returns
         return predictions
 
-    def predict_value(self, n_days):
+    def predict_value(self, n_days, n_repl=None):
         model = self._make_prediction_model(n_days)
         predict_func = model.make_predict_function()
-        n_chains, n_samples = len(self.trace.chain), len(self.trace.sample)
-        n_algos = len(self.trace.algo)
-        prediction_data = np.zeros((n_chains, n_samples, n_algos))
-        predictions = xr.DataArray(
-            prediction_data,
-            coords=[self.trace.chain, self.trace.sample, self.trace.algo])
+        coords = [self.trace.chain, self.trace.sample, self.trace.algo]
+        if n_repl is not None:
+            repl_coord = pd.RangeIndex(n_repl)
+            coords.append(repl_coord)
+        shape = [len(vals) for vals in coords]
+
+        prediction_data = np.zeros(shape)
+        predictions = xr.DataArray(prediction_data, coords=coords)
         for (chain, sample), point in self._points(include_transformed=False):
-            returns = predict_func(point)
-            cum_returns = empyrical.cum_returns_final(returns.to_pandas().T)
-            predictions.loc[chain, sample, :] = cum_returns
+            if n_repl is None:
+                returns = predict_func(point).to_pandas().T
+                cum_returns = empyrical.cum_returns_final(returns)
+                predictions.loc[chain, sample, :] = cum_returns
+            else:
+                for repl in repl_coord:
+                    returns = predict_func(point).to_pandas().T
+                    cum_returns = empyrical.cum_returns_final(returns)
+                    predictions.loc[chain, sample, :, repl] = cum_returns
         return predictions
 
     def prediction_iter(self, n_days):
@@ -467,6 +482,64 @@ class FitResult:
         predict_func = model.make_predict_function()
         for point in self._random_point_iter(include_transformed=False):
             yield predict_func(point)
+
+
+class Optimizer(object):
+    def __init__(self, fit, n_days, lmda=None, factor_weights=None):
+        """Compute a portfolio based on model predictions.
+
+        Parameters
+        ----------
+        fit : bayesalpha.model.FitResult
+            The model fit to base the portfolio on.
+        n_days : int
+            Minimize the risk after this many days after the last
+            prediction.
+        lmda : float
+            Risk aversion parameter. This value can be overridden
+            by passing a different value to `solve`.
+        factor_weights : ndarray
+            TODO
+        """
+        self._fit = fit
+        self._returns = fit.predict_value(n_days)
+        self._problem = self._build_problem(lmda, factor_weights)
+
+    def _build_problem(self, lmda_vals, factor_weights_vals):
+        n_predict = len(self._returns.chain) * len(self._returns.sample)
+        n_algos = len(self._returns.algo)
+        lmda = cvxpy.Parameter(sign='positive', name='lambda')
+        returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
+        weights = cvxpy.Variable(n_algos, name='weights')
+        portfolio_returns = returns * weights
+        loss_ret = cvxpy.exp(-lmda * portfolio_returns)
+        risk = cvxpy.sum_entries(loss_ret)
+        problem = cvxpy.Problem(
+            cvxpy.Minimize(risk),
+            [cvxpy.sum_entries(weights) == 1, weights >= 0])
+
+        if lmda_vals is not None:
+            lmda.value = lmda_vals
+        predictions = self._returns.stack(prediction=('chain', 'sample'))
+        returns.value = predictions.values.T
+
+        self._lmda_p = lmda
+        self._factor_weights_p = None
+        self._weights_v = weights
+        return problem
+
+    def solve(self, lmda=None, factor_weights=None):
+        """Find the optimal weights for the portfolio."""
+        if lmda is not None:
+            self._lmda_p.value = lmda
+        if factor_weights is not None:
+            self._factor_weights_p.value = factor_weights
+        self._problem.solve()
+        if self._problem.status != 'optimal':
+            raise ValueError('Optimization did not converge.')
+        weights = self._weights_v.value.A.ravel().copy()
+        algos = self._fit.trace.algo
+        return xr.DataArray(weights, coords=[algos], name='weights')
 
 
 def fit_population(data, algos=None, sampler_args=None, save_data=True,
@@ -537,47 +610,6 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
             except ValueError:
                 warnings.warn('Could not save algo metadata, skipping.')
     return FitResult(trace)
-
-
-class Optimizer(object):
-    def __init__(self, fit, n_days, lmda=None, factor_weights=None):
-        self._fit = fit
-        self._lmda = lmda
-        self._factor_weights = factor_weights
-        self._returns = fit.predict_value(n_days)
-        self._problem = self._build_problem()
-
-    def _build_problem(self):
-        n_predict = len(self._returns.chain) * len(self._returns.sample)
-        n_algos = len(self._returns.algo)
-        lmda = cvxpy.Parameter(sign='positive', name='lambda')
-        returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
-        weights = cvxpy.Variable(n_algos, name='weights')
-        portfolio_returns = returns * weights
-        loss_ret = cvxpy.exp(-lmda * portfolio_returns)
-        risk = cvxpy.sum_entries(loss_ret)
-        problem = cvxpy.Problem(
-            cvxpy.Minimize(risk),
-            [cvxpy.sum_entries(weights) == 1, weights >= 0])
-
-        lmda.value = self._lmda
-        predictions = self._returns.stack(prediction=('chain', 'sample'))
-        returns.value = predictions.values.T
-
-        self._lmda_p = lmda
-        self._factor_weights_p = None
-        self._weights_v = weights
-        return problem
-
-    def solve(self, lmda=None, factor_weights=None):
-        if lmda is not None:
-            self._lmda_p.value = lmda
-        if factor_weights is not None:
-            self._factor_weights_p.value = factor_weights
-        self._problem.solve()
-        if self._problem.status != 'optimal':
-            raise ValueError('Optimization did not converge.')
-        return self._weights_v.value.copy()
 
 
 _TRACE_PARAM_NAMES = {
