@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def plot_horizontal_dots(vals, sort=True, ax=None, **kwargs):
+def plot_horizontal_dots(vals, sort=True, ax=None, title=None, **kwargs):
     if ax is None:
         _, ax = plt.subplots(1, 1, figsize=(4, 7))
 
@@ -21,6 +21,8 @@ def plot_horizontal_dots(vals, sort=True, ax=None, **kwargs):
     ax.grid(axis='x', color='w', zorder=-5)
     ax.scatter(vals.values, y, marker='d', zorder=5)
     ax.axvline(0.5, alpha=0.3, color='black')
+    if title:
+        ax.set_title(title)
 
     locs = y
 

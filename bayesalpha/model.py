@@ -354,8 +354,14 @@ class FitResult:
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
 
-    def plot_prob(self, algos=None, ax=None, sort=True, rope=False,
-                  rope_upper=.05, rope_lower=None):
+    def plot_prob(self,
+                  algos=None,
+                  ax=None,
+                  sort=True,
+                  rope=False,
+                  rope_upper=.05,
+                  rope_lower=None,
+                  title=None):
         if rope:
             prob_func = partial(self.gains_rope, rope_upper, lower=rope_lower)
         else:
@@ -368,7 +374,13 @@ class FitResult:
 
         xlabel = 'P(gains ~ 0)' if rope else 'P(gains > 0)'
 
-        ax = plot_horizontal_dots(vals, sort=sort, ax=ax, xlabel=xlabel)
+        ax = plot_horizontal_dots(
+            vals,
+            sort=sort,
+            ax=ax,
+            xlabel=xlabel,
+            title=title
+        )
 
         return ax
 
