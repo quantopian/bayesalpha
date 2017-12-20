@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+
 def plot_horizontal_dots(vals, sort=True, ax=None, **kwargs):
     if ax is None:
         _, ax = plt.subplots(1, 1, figsize=(4, 7))
@@ -25,10 +26,10 @@ def plot_horizontal_dots(vals, sort=True, ax=None, **kwargs):
 
     ax.set(**plot_kwargs)
 
-    ax.barh(locs, [max(ax.get_xticks())] * len(locs),
-            height=(locs[1]-locs[0]),
-            color=['lightgray', 'w'],
-            zorder=-10, alpha=.25)
-
+    if len(vals) > 1:
+        ax.barh(locs, [max(ax.get_xticks())] * len(locs),
+                height=(locs[1] - locs[0]),
+                color=['lightgray', 'w'],
+                zorder=-10, alpha=.25)
 
     return ax
