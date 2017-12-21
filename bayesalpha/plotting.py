@@ -4,7 +4,7 @@ import numpy as np
 
 def plot_horizontal_dots(vals, sort=True, ax=None, title=None, **kwargs):
     if ax is None:
-        height = len(vals)
+        height = 2 + 14 * (1 - np.exp(-0.02 * len(vals)))
         _, ax = plt.subplots(1, 1, figsize=(4, height))
 
     if sort:
