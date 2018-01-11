@@ -502,7 +502,7 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
         sampler_args = sampler_args.copy()
     if seed is None:
         # int(...) does not work for serializing
-        seed = np.int32(random.getrandbits(32))
+        seed = np.int32(random.getrandbits(31))
     else:
         seed = np.int32(seed)
     if 'random_seed' in sampler_args:
