@@ -272,7 +272,8 @@ class ModelBuilder(object):
                           and var.name not in delete_vars)]
         outputs = [getattr(self.model, var) for var in compute_vars]
         inputs = [getattr(self.model, var) for var in input_vars]
-        vals_func = theano.function(inputs, outputs, on_unused_input='ignore')
+        # downcast inputs if needed
+        vals_func = theano.function(inputs, outputs, on_unused_input='ignore', allow_input_downcast=True)
 
         algos = self.coords['algo']
         time = self.coords['time']
@@ -500,10 +501,13 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
     else:
         sampler_args = sampler_args.copy()
     if seed is None:
-        seed = int(random.getrandbits(32))
+        # int(...) does not work for serializing
+        seed = np.int32(random.getrandbits(31))
+    else:
+        seed = np.int32(seed)
     if 'random_seed' in sampler_args:
         raise ValueError('Can not specify `random_seed`.')
-    sampler_args['random_seed'] = int(seed)
+    sampler_args['random_seed'] = seed
 
     model, coords, dims = build_model(data, algos, factors=factors, **params)
     timestamp = datetime.isoformat(datetime.now())
