@@ -15,8 +15,11 @@ with open(REQUIREMENTS_FILE) as reqfile:
     install_reqs = reqfile.read().splitlines()
 
 if __name__ == "__main__":
-    setup(name=DISTNAME,
-          version=versioneer.get_version(),
-          cmdclass=versioneer.get_cmdclass(),
-          packages=find_packages(),
-          install_requires=install_reqs)
+    setup(
+        name=DISTNAME,
+        version=versioneer.get_version(),
+        cmdclass=versioneer.get_cmdclass(),
+        packages=find_packages(),
+        install_requires=install_reqs,
+        test_requires=['pytest']
+    )
