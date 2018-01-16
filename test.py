@@ -63,6 +63,6 @@ def algo_meta(date_range, T):
 
 def test_fit_population(observations, algo_meta, Sigma_type):
     trace = bayesalpha.fit_population(
-        observations, algo_meta, sampler_args={'draws': 10, 'tune': 0},
+        observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
         corr_type=Sigma_type
     )

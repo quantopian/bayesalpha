@@ -34,7 +34,7 @@ class ScaledSdMvNormalNonZero(pm.MvNormal):
         if scale_sd.ndim == 2:
             trafo = (value - mu) / scale_sd
         elif scale_sd.ndim == 1:
-            trafo = (value - mu) / scale_sd[:, None]
+            trafo = (value - mu) / scale_sd[None, :]
         else:
             assert False
         ok = ~tt.any(tt.isinf(trafo) | tt.isnan(trafo))
@@ -42,7 +42,6 @@ class ScaledSdMvNormalNonZero(pm.MvNormal):
         logp = super(ScaledSdMvNormalNonZero, self).logp(trafo) + detfix
         logp = tt.switch(tt.eq(value, 0).any(-1), 0., logp)
         return tt.switch(ok, logp, -np.inf)
-        # ===============================
 
     def random(self, point=None, size=None):
         r = super(ScaledSdMvNormalNonZero, self).random(point=point, size=size)

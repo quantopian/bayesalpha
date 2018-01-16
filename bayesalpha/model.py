@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 from scipy import sparse, stats
 import theano
+import theano.sparse
 import theano.tensor as tt
 import pymc3 as pm
 import json
@@ -45,6 +46,7 @@ class ModelBuilder(object):
         # The build functions add items when appropriate
         self.coords = {
             'algo': data.columns,
+            'algo_': data.columns,
             'time': data.index,
             'factor': factors.columns
         }
@@ -72,9 +74,7 @@ class ModelBuilder(object):
             if len(factors.columns) > 0 and not self._predict:
                 factors_mu = self._build_factors()
                 mu = mu + factors_mu
-
-            corr = self._build_corr()
-            self._build_likelihood(mu, vlt, corr, observed=data.values.T)
+            self._build_likelihood(mu, vlt, observed=data.values.T)
 
         if self.params:
             raise ValueError('Unused params: %s' % params.keys())
@@ -114,39 +114,53 @@ class ModelBuilder(object):
 
         return Bx_log_vlt, Bx_gains
 
-    def _build_volatility(self, Bx_log_vlt):
+    def _build_log_volatility_mean(self):
+        self.corr_type = corr_type = self.params.pop('corr_type')
+        k = self.n_algos
+        if corr_type == 'diag':
+            log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
+        elif corr_type == 'dense':
+            vlt_mu = pm.HalfStudentT.dist(nu=5, sd=0.1, shape=k)
+            chol_cov_packed = pm.LKJCholeskyCov('chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu)
+            chol_cov = pm.expand_packed_triangular(k, chol_cov_packed)
+            vlt_mu = pm.expand_packed_triangular(k, chol_cov_packed, diagonal_only=True)
+            cov = tt.dot(chol_cov, chol_cov.T)
+            pm.Deterministic('chol_cov_mu', chol_cov)
+            pm.Deterministic('cov_mu', cov)
+            # important, add new coordinate
+            self.coords['algo_chol'] = pd.RangeIndex(k * (k + 1) // 2)
+            self.dims['chol_cov_packed_mu'] = ('algo_chol',)
+            self.dims['cov_mu'] = ('algo', 'algo_')
+            self.dims['chol_cov_mu'] = ('algo', 'algo_')
+            log_vlt_mu = tt.log(vlt_mu)
+        else:
+            raise NotImplementedError
+        self.dims['log_vlt_mu'] = ('algo',)
+        return log_vlt_mu
+
+    def _build_log_volatility_time(self):
         k = self.n_algos
         n_knots_vlt = len(self.coords['time_raw_vlt'])
 
         log_vlt_time_alpha = pm.HalfNormal('log_vlt_time_alpha', sd=0.1)
         log_vlt_time_sd = pm.HalfNormal('log_vlt_time_sd', sd=0.5, shape=k)
         self.dims['log_vlt_time_sd'] = ('algo',)
-
-        log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
-        self.dims['log_vlt_mu'] = ('algo',)
         log_vlt_time_raw = GPExponential(
             'log_vlt_time_raw', mu=0, alpha=log_vlt_time_alpha,
             sigma=1, shape=(k, n_knots_vlt))
         self.dims['log_vlt_time_raw'] = ('algo', 'time_raw_vlt')
-        log_vlt_raw = (log_vlt_mu[:, None]
-                       + log_vlt_time_sd[:, None] * log_vlt_time_raw)
-        log_vlt = sparse_dot(Bx_log_vlt, log_vlt_raw.T).T
+        return log_vlt_time_sd[:, None] * log_vlt_time_raw
 
+    def _build_volatility(self, Bx_log_vlt):
+        log_vlt_mu = self._build_log_volatility_mean()
+        log_vlt_time = self._build_log_volatility_time()
+        log_vlt_raw = (log_vlt_mu[:, None]
+                       + log_vlt_time)
+        log_vlt = sparse_dot(Bx_log_vlt, log_vlt_raw.T).T
         pm.Deterministic('log_vlt', log_vlt)
         self.dims['log_vlt'] = ('algo', 'time')
         vlt = tt.exp(log_vlt)
         return vlt
-
-    def _build_corr(self):
-        corr_type = self.params.pop('corr_type')
-        if corr_type == 'diag':
-            return None
-        elif corr_type == 'dense':
-            k = self.n_algos
-            corr = pm.LKJCorr('corr_packed', n=k, eta=1.)
-            corr = pm.expand_packed_triangular(k, corr)
-            corr = tt.fill_diagonal(corr, 1.)
-            return corr
 
     def _build_gains_mu(self, is_author_is):
         self.dims.update({
@@ -253,14 +267,15 @@ class ModelBuilder(object):
         pm.Deterministic('gains_time', gains_time)
         return gains_time
 
-    def _build_likelihood(self, mu, sd, corr, observed):
-        if corr is None:
+    def _build_likelihood(self, mu, sd, observed):
+        corr_type = self.corr_type
+        if corr_type == 'diag':
             NormalNonZero('y', mu=mu, sd=sd, observed=observed)
-        elif corr.ndim == 2:
+        elif corr_type == 'dense':
             # mu, sd  --`shape`-- (algo, time)
             # mv needs (time, algo)
-            ScaledSdMvNormalNonZero('y', mu=mu.T, cov=corr, scale_sd=sd.T, observed=observed.T)
-        elif corr.ndim == 3:
+            ScaledSdMvNormalNonZero('y', mu=mu.T, chol=self.model.named_vars['chol_cov_mu'], scale_sd=sd.T, observed=observed.T)
+        else:
             raise NotImplementedError
         if self._predict:
             self.dims['mu'] = ('algo', 'time')
