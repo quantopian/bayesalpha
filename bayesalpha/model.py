@@ -13,14 +13,20 @@ from datetime import datetime
 import random
 import pandas as pd
 
-from bayesalpha.dists import bspline_basis, GPExponential, NormalNonZero
+from bayesalpha.dists import (
+    bspline_basis,
+    GPExponential,
+    NormalNonZero,
+    ScaledSdMvNormalNonZero
+)
 from bayesalpha.dists import dot as sparse_dot
 from bayesalpha.serialize import to_xarray
 from bayesalpha._version import get_versions
 from bayesalpha.plotting import plot_horizontal_dots
 
 _PARAM_DEFAULTS = {
-    'shrinkage': 'exponential'
+    'shrinkage': 'exponential',
+    'corr_type': 'diag',
 }
 
 
@@ -67,7 +73,8 @@ class ModelBuilder(object):
                 factors_mu = self._build_factors()
                 mu = mu + factors_mu
 
-            self._build_likelihood(mu, vlt, observed=data.values.T)
+            corr = self._build_corr()
+            self._build_likelihood(mu, vlt, corr, observed=data.values.T)
 
         if self.params:
             raise ValueError('Unused params: %s' % params.keys())
@@ -129,6 +136,17 @@ class ModelBuilder(object):
         self.dims['log_vlt'] = ('algo', 'time')
         vlt = tt.exp(log_vlt)
         return vlt
+
+    def _build_corr(self):
+        corr_type = self.params.pop('corr_type')
+        if corr_type == 'diag':
+            return None
+        elif corr_type == 'dense':
+            k = self.n_algos
+            corr = pm.LKJCorr('corr_packed', n=k, eta=1.)
+            corr = pm.expand_packed_triangular(k, corr)
+            corr = tt.fill_diagonal(corr, 1.)
+            return corr
 
     def _build_gains_mu(self, is_author_is):
         self.dims.update({
@@ -235,8 +253,15 @@ class ModelBuilder(object):
         pm.Deterministic('gains_time', gains_time)
         return gains_time
 
-    def _build_likelihood(self, mu, sd, observed):
-        NormalNonZero('y', mu=mu, sd=sd, observed=observed)
+    def _build_likelihood(self, mu, sd, corr, observed):
+        if corr is None:
+            NormalNonZero('y', mu=mu, sd=sd, observed=observed)
+        elif corr.ndim == 2:
+            # mu, sd  --`shape`-- (algo, time)
+            # mv needs (time, algo)
+            ScaledSdMvNormalNonZero('y', mu=mu.T, cov=corr, scale_sd=sd.T, observed=observed.T)
+        elif corr.ndim == 3:
+            raise NotImplementedError
         if self._predict:
             self.dims['mu'] = ('algo', 'time')
             pm.Deterministic('mu', mu)
@@ -591,8 +616,10 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
 
     if population_fit is None:
         trace_shrinkage = None
+        trace_corr = None
     else:
         trace_shrinkage = population_fit.params['shrinkage']
+        trace_corr = population_fit.params['corr']
 
     shrinkage = params.pop('shrinkage', trace_shrinkage)
     if shrinkage is None:

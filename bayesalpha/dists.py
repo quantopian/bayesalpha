@@ -7,50 +7,49 @@ from pymc3.distributions.distribution import draw_values
 
 
 class NormalNonZero(pm.Normal):
-    def logp(self, values):
-        all_logp = pm.Normal.dist(mu=self.mu, sd=self.sd).logp(values)
-        return tt.switch(tt.eq(values, 0), 0., all_logp)
+    def logp(self, value):
+        all_logp = super(NormalNonZero, self).logp(value)
+        return tt.switch(tt.eq(value, 0), 0., all_logp)
 
 
-class ScaledMvNormal(pm.Continuous):
-    def __init__(self, mu, chol, sd_scale, *args, **kwargs):
-        super(ScaledMvNormal, self).__init__(*args, **kwargs)
-        self._mu = tt.as_tensor_variable(mu)
-        self._chol = tt.as_tensor_variable(chol)
-        self._sd_scale = tt.as_tensor_variable(sd_scale)
-        if not chol.ndim == 2:
-            raise ValueError('chol must be two-dimensional.')
+class ScaledSdMvNormalNonZero(pm.MvNormal):
+    def __init__(self, *args, **kwargs):
+        self.scale_sd = kwargs.pop('scale_sd')
+        assert not args
+        self._mu = kwargs.pop('mu')
+        kwargs['mu'] = 0.
+        super(ScaledSdMvNormalNonZero, self).__init__(**kwargs)
 
     def logp(self, value):
-        mu, chol, sd_scale = self._mu, self._chol, self._sd_scale
+        scale_sd = self.scale_sd
+        if scale_sd.ndim == 1:
+            detfix = -pm.floatX(self.shape[0]) * tt.log(scale_sd)
+        else:
+            detfix = -tt.log(scale_sd).sum(axis=-1)
+        mu = self._mu
         if value.ndim not in [1, 2]:
             raise ValueError('Invalid value shape. Must be two-dimensional.')
         if value.ndim == 1:
             value = value.reshape((-1, value.shape[0]))
-
-        if sd_scale.ndim == 2:
-            trafo = (value - mu) / sd_scale
-        elif sd_scale.ndim == 1:
-            trafo = (value - mu) / sd_scale[:, None]
+        if scale_sd.ndim == 2:
+            trafo = (value - mu) / scale_sd
+        elif scale_sd.ndim == 1:
+            trafo = (value - mu) / scale_sd[:, None]
         else:
             assert False
-
         ok = ~tt.any(tt.isinf(trafo) | tt.isnan(trafo))
-        trafo = tt.switch(ok, trafo, 1)
-
-        logp = pm.MvNormal.dist(mu=tt.zeros([chol.shape[0]]),
-                                chol=chol).logp(trafo)
-        if sd_scale.ndim == 1:
-            detfix = -chol.shape[0] * tt.log(sd_scale)
-        else:
-            detfix = -tt.log(sd_scale).sum(axis=-1)
-        return tt.switch(ok, logp + detfix, -np.inf)
+        trafo = tt.switch(ok, trafo, 0.)
+        logp = super(ScaledSdMvNormalNonZero, self).logp(trafo) + detfix
+        logp = tt.switch(tt.eq(value, 0).any(-1), 0., logp)
+        return tt.switch(ok, logp, -np.inf)
+        # ===============================
 
     def random(self, point=None, size=None):
-        mu, chol, sd_scale = draw_values([self._mu, self._chol, self._sd_scale],
-                                         point=point)
-        normal = pm.Normal.dist(mu=mu, chol=chol).random(point, size)
-        return normal * sd_scale[:, None]
+        r = super(ScaledSdMvNormalNonZero, self).random(point=point, size=size)
+        scale_sd, mu = draw_values([self.scale_sd, self._mu], point=point)
+        r *= scale_sd
+        r += mu
+        return r
 
 
 class GPExponential(pm.Continuous):
@@ -245,3 +244,87 @@ def dot(x, y):
         raise TypeError()
 
     return _dot(x, y)
+
+
+class BatchedMatrixInverse(tt.Op):
+    """Computes the inverse of a matrix :math:`A`.
+
+    Given a square matrix :math:`A`, ``matrix_inverse`` returns a square
+    matrix :math:`A_{inv}` such that the dot product :math:`A \cdot A_{inv}`
+    and :math:`A_{inv} \cdot A` equals the identity matrix :math:`I`.
+
+    Notes
+    -----
+    When possible, the call to this op will be optimized to the call
+    of ``solve``.
+
+    """
+
+    __props__ = ()
+
+    def __init__(self):
+        pass
+
+    def make_node(self, x):
+        x = tt.as_tensor_variable(x)
+        assert x.dim == 3
+        return tt.Apply(self, [x], [x.type()])
+
+    def perform(self, node, inputs, outputs):
+        (x,) = inputs
+        (z,) = outputs
+        z[0] = np.linalg.inv(x).astype(x.dtype)
+
+    def grad(self, inputs, g_outputs):
+        r"""The gradient function should return
+
+            .. math:: V\frac{\partial X^{-1}}{\partial X},
+
+        where :math:`V` corresponds to ``g_outputs`` and :math:`X` to
+        ``inputs``. Using the `matrix cookbook
+        <http://www2.imm.dtu.dk/pubdb/views/publication_details.php?id=3274>`_,
+        one can deduce that the relation corresponds to
+
+            .. math:: (X^{-1} \cdot V^{T} \cdot X^{-1})^T.
+
+        """
+        x, = inputs
+        xi = self.__call__(x)
+        gz, = g_outputs
+        # TT.dot(gz.T,xi)
+        gx = tt.batched_dot(xi, gz.transpose(0, 2, 1))
+        gx = tt.batched_dot(gx, xi)
+        gx = -gx.transpose(0, 2, 1)
+        return [gx]
+
+    def R_op(self, inputs, eval_points):
+        r"""The gradient function should return
+
+            .. math:: \frac{\partial X^{-1}}{\partial X}V,
+
+        where :math:`V` corresponds to ``g_outputs`` and :math:`X` to
+        ``inputs``. Using the `matrix cookbook
+        <http://www2.imm.dtu.dk/pubdb/views/publication_details.php?id=3274>`_,
+        one can deduce that the relation corresponds to
+
+            .. math:: X^{-1} \cdot V \cdot X^{-1}.
+
+        """
+        x, = inputs
+        xi = self.__call__(x)
+        ev, = eval_points
+
+        if ev is None:
+            return [None]
+
+        r = tt.batched_dot(xi, ev)
+        r = tt.batched_dot(r, xi)
+        r = -r
+        return [r]
+
+    def infer_shape(self, node, shapes):
+        return shapes
+
+
+batched_matrix_inverse = BatchedMatrixInverse()
+

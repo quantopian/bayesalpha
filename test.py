@@ -9,8 +9,8 @@ import pytest
 @pytest.fixture(
     'module',
     [
-        'diag',
-        #'dense',
+      #  'diag',
+        'dense',
         #'time-varying'
     ])
 def Sigma_type(request):
@@ -30,17 +30,16 @@ def date_range(T):
 @pytest.fixture
 def Sigma(Sigma_type, T):
     if Sigma_type == 'diag':
-
-        return np.matrix([[0.000246, 0.], [0., 0.000093]])
+        return np.matrix([[0.000246, 0.], [0., 0.000093]], 'float32')
     elif Sigma_type == 'dense':
-        return np.matrix([[0.000246, 0.000048], [0.000048, 0.000093]])
+        return np.matrix([[0.000246, 0.000048], [0.000048, 0.000093]], 'float32')
     else:
         raise KeyError(Sigma_type)
 
 
 @pytest.fixture('module')
 def algo_gain():
-    return np.array([0.0001, 0.0004])
+    return np.array([0.0001, 0.0004], 'float32')
 
 
 @pytest.fixture
@@ -62,5 +61,8 @@ def algo_meta(date_range, T):
     )
 
 
-def test_fit_population(observations, algo_meta):
-    trace = bayesalpha.fit_population(observations, algo_meta, sampler_args={'draws': 10, 'tune': 0})
+def test_fit_population(observations, algo_meta, Sigma_type):
+    trace = bayesalpha.fit_population(
+        observations, algo_meta, sampler_args={'draws': 10, 'tune': 0},
+        corr_type=Sigma_type
+    )
