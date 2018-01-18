@@ -123,9 +123,9 @@ class ModelBuilder(object):
             vlt_mu_dist = pm.HalfStudentT.dist(nu=5, sd=0.1, shape=k)
             chol_cov_packed = pm.LKJCholeskyCov('chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
             chol_cov = pm.expand_packed_triangular(k, chol_cov_packed)
-            vlt_mu = pm.expand_packed_triangular(k, chol_cov_packed, diagonal_only=True)
             cov = tt.dot(chol_cov, chol_cov.T)
-            corr = cov / (vlt_mu[:, None] * vlt_mu[None, :]) ** .5
+            variance_mu = tt.diag(cov)
+            corr = cov / (variance_mu[:, None] * variance_mu[None, :]) ** .5
             pm.Deterministic('chol_cov_mu', chol_cov)
             pm.Deterministic('cov_mu', cov)
             pm.Deterministic('corr_mu', corr)
@@ -135,7 +135,7 @@ class ModelBuilder(object):
             self.dims['cov_mu'] = ('algo', 'algo_')
             self.dims['corr_mu'] = ('algo', 'algo_')
             self.dims['chol_cov_mu'] = ('algo', 'algo_')
-            log_vlt_mu = tt.log(vlt_mu) / 2.
+            log_vlt_mu = tt.log(variance_mu) / 2.
         else:
             raise NotImplementedError
         self.dims['log_vlt_mu'] = ('algo',)
