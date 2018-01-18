@@ -136,7 +136,7 @@ class ModelBuilder(object):
         else:
             raise NotImplementedError
         self.dims['log_vlt_mu'] = ('algo',)
-        return log_vlt_mu
+        return pm.Deterministic('log_vlt_mu', log_vlt_mu)
 
     def _build_log_volatility_time(self):
         k = self.n_algos
