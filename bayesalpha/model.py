@@ -23,7 +23,7 @@ from bayesalpha.dists import (
 from bayesalpha.dists import dot as sparse_dot
 from bayesalpha.serialize import to_xarray
 from bayesalpha._version import get_versions
-from bayesalpha.plotting import plot_horizontal_dots
+import bayesalpha.plotting
 
 _PARAM_DEFAULTS = {
     'shrinkage': 'exponential',
@@ -135,11 +135,11 @@ class ModelBuilder(object):
             self.dims['cov_mu'] = ('algo', 'algo_')
             self.dims['corr_mu'] = ('algo', 'algo_')
             self.dims['chol_cov_mu'] = ('algo', 'algo_')
-            log_vlt_mu = tt.log(variance_mu) / 2.
+            log_vlt_mu = pm.Deterministic('log_vlt_mu', tt.log(variance_mu) / 2.)
         else:
             raise NotImplementedError
         self.dims['log_vlt_mu'] = ('algo',)
-        return pm.Deterministic('log_vlt_mu', log_vlt_mu)
+        return log_vlt_mu
 
     def _build_log_volatility_time(self):
         k = self.n_algos
@@ -342,7 +342,7 @@ class FitResult:
     def __init__(self, trace):
         self._trace = trace
 
-    def save(self, filename, group, **args):
+    def save(self, filename, group=None, **args):
         """Save the results to a netcdf file."""
         self._trace.to_netcdf(filename, group=group, **args)
 
@@ -418,7 +418,7 @@ class FitResult:
 
         xlabel = 'P(gains ~ 0)' if rope else 'P(gains > 0)'
 
-        ax = plot_horizontal_dots(
+        ax = bayesalpha.plotting.plot_horizontal_dots(
             vals,
             sort=sort,
             ax=ax,
@@ -427,6 +427,14 @@ class FitResult:
         )
 
         return ax
+
+    def plot_corr(self, algos=None, corr_threshold=.33, ax=None, cmap=None, **heatmap_kwargs):
+        corr = self.trace['corr_mu']
+        if algos is not None:
+            corr = corr.loc[dict(algo=algos, algo_=algos)]
+        return bayesalpha.plotting.plot_correlations(
+            corr_xarray=corr, ax=ax, corr_threshold=corr_threshold,
+            cmap=cmap, **heatmap_kwargs)
 
     def gains_pos_prob(self):
         return (

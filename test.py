@@ -9,7 +9,7 @@ import pytest
 @pytest.fixture(
     'module',
     [
-      #  'diag',
+        'diag',
         'dense',
         #'time-varying'
     ])
