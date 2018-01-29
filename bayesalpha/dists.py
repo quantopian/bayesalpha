@@ -17,13 +17,16 @@ class ScaledSdMvNormalNonZero(pm.MvNormal):
         self.scale_sd = kwargs.pop('scale_sd')
         assert not args
         self._mu = kwargs.pop('mu')
-        kwargs['mu'] = 0.
+        if isinstance(self._mu, tt.Variable):
+            kwargs['mu'] = tt.zeros_like(self._mu)
+        else:
+            kwargs['mu'] = np.zeros_like(self._mu)
         super(ScaledSdMvNormalNonZero, self).__init__(**kwargs)
 
     def logp(self, value):
         scale_sd = self.scale_sd
         if scale_sd.ndim == 1:
-            detfix = -pm.floatX(self.shape[0]) * tt.log(scale_sd)
+            detfix = -pm.floatX(self._mu.shape[-1]) * tt.log(scale_sd)
         else:
             detfix = -tt.log(scale_sd).sum(axis=-1)
         mu = self._mu

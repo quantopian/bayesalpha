@@ -46,7 +46,6 @@ class ModelBuilder(object):
         # The build functions add items when appropriate
         self.coords = {
             'algo': data.columns,
-            'algo_': data.columns,
             'time': data.index,
             'factor': factors.columns
         }
@@ -120,7 +119,7 @@ class ModelBuilder(object):
         if corr_type == 'diag':
             log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
         elif corr_type == 'dense':
-            vlt_mu_dist = pm.HalfStudentT.dist(nu=5, sd=0.1, shape=k)
+            vlt_mu_dist = pm.Lognormal.dist(mu=-3, sd=1, shape=k)
             chol_cov_packed = pm.LKJCholeskyCov('chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
             chol_cov = pm.expand_packed_triangular(k, chol_cov_packed)
             cov = tt.dot(chol_cov, chol_cov.T)
@@ -131,6 +130,7 @@ class ModelBuilder(object):
             pm.Deterministic('corr_mu', corr)
             # important, add new coordinate
             self.coords['algo_chol'] = pd.RangeIndex(k * (k + 1) // 2)
+            self.coords['algo_'] = self.coords['algo']
             self.dims['chol_cov_packed_mu'] = ('algo_chol',)
             self.dims['cov_mu'] = ('algo', 'algo_')
             self.dims['corr_mu'] = ('algo', 'algo_')
@@ -156,11 +156,12 @@ class ModelBuilder(object):
 
     def _build_volatility(self, Bx_log_vlt):
         log_vlt_mu = self._build_log_volatility_mean()
-        log_vlt_time = self._build_log_volatility_time()
-        log_vlt_raw = (log_vlt_mu[:, None]
-                       + log_vlt_time)
-        log_vlt = sparse_dot(Bx_log_vlt, log_vlt_raw.T).T
+        log_vlt_time_raw = self._build_log_volatility_time()
+        log_vlt_time = sparse_dot(Bx_log_vlt, log_vlt_time_raw.T).T
+        log_vlt = log_vlt_time + log_vlt_mu[:, None]
+        pm.Deterministic('log_vlt_time', log_vlt_time)
         pm.Deterministic('log_vlt', log_vlt)
+        self.dims['log_vlt_time'] = ('algo', 'time')
         self.dims['log_vlt'] = ('algo', 'time')
         vlt = tt.exp(log_vlt)
         return vlt
@@ -277,7 +278,10 @@ class ModelBuilder(object):
         elif corr_type == 'dense':
             # mu, sd  --`shape`-- (algo, time)
             # mv needs (time, algo)
-            ScaledSdMvNormalNonZero('y', mu=mu.T, chol=self.model.named_vars['chol_cov_mu'], scale_sd=sd.T, observed=observed.T)
+            ScaledSdMvNormalNonZero('y', mu=mu.T,
+                                    chol=self.model.named_vars['chol_cov_mu'],
+                                    scale_sd=tt.exp(self.model.named_vars['log_vlt_time'].T),
+                                    observed=observed.T)
         else:
             raise NotImplementedError
         if self._predict:
@@ -518,7 +522,7 @@ class FitResult:
 
 
 def fit_population(data, algos=None, sampler_args=None, save_data=True,
-                   seed=None, factors=None, **params):
+                   seed=None, factors=None, sampler_type='mcmc', **params):
     """Fit the model to daily returns.
 
     Parameters
@@ -538,6 +542,8 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
     seed : int
         Seed for random number generation in PyMC3.
     """
+    if sampler_type not in {'mcmc', 'vi'}:
+        raise ValueError("sampler_type not in {'mcmc', 'vi'}")
     _check_data(data)
     params_ = _PARAM_DEFAULTS.copy()
     params_.update(params)
@@ -564,7 +570,10 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
     with model:
         args = {} if sampler_args is None else sampler_args
         with warnings.catch_warnings(record=True) as warns:
-            trace = pm.sample(**args)
+            if sampler_type == 'mcmc':
+                trace = pm.sample(**args)
+            else:
+                trace = pm.fit(**args).sample(args.get('draws', 500))
     if warns:
         warnings.warn('Problems during sampling. Inspect `result.warnings`.')
     trace = to_xarray(trace, coords, dims)
