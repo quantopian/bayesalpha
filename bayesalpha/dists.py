@@ -448,8 +448,9 @@ class EQCorrMvNormal(pm.Continuous):
         if self.nonzero:
             logp = tt.switch(tt.eq(x, 0).any(-1), 0., logp)
         return bound(logp,
-                     -1. < corr < 1.,
-                     std > 0.,
+                     tt.gt(corr, -1.),
+                     tt.lt(corr, 1.),
+                     tt.gt(std, 0.),
                      broadcast_conditions=False)
 
     def random(self, point=None, size=None):
@@ -481,7 +482,3 @@ class EQCorrMvNormal(pm.Continuous):
         chol = np.linalg.cholesky(cov)
         standard_normal = np.random.standard_normal(size)
         return mu + np.dot(standard_normal, chol.swapaxes(-1, -2))
-
-
-class EQCorrMvNormalNonZero(EQCorrMvNormal):
-    def logp(self, x):
