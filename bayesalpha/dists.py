@@ -386,13 +386,17 @@ class EQCorrMvNormal(pm.Continuous):
         # assuming
         # z = (x - mu) / std
         # we have det fix
-        # detfix = sum(log(std))
+        # detfix = -sum(log(std))
         #
         # now we need to compute z @ Corr^-1 @ z^T
         # note that B can be unique per timestep
         # so we need z_t @ Corr_t^-1 @ z_t^T in perfect
         # z_t @ Corr_t^-1 @ z_t^T is a sum of block terms
-        # z_ct @ B_ct^-1 @ z_ct^T = (B^-1)_iict * sum(z_ct**2) + (B^-1)_ijct*sum_{i!=j}(z_ict * z_jct)
+        # quad = z_ct @ B_ct^-1 @ z_ct^T = (B^-1)_iict * sum(z_ct**2) + (B^-1)_ijct*sum_{i!=j}(z_ict * z_jct)
+        #
+        # finally all terms are computed explicitly
+        # logp = detfix - 1/2 * ( quad + log(pi*2) * k + log(|B|) )
+
         x = tt.as_tensor_variable(x)
         clust_ids, clust_pos, clust_counts = tt.extra_ops.Unique(return_inverse=True, return_counts=True)(self.clust)
         clust_order = tt.argsort(clust_pos)
