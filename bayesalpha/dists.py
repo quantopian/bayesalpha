@@ -334,11 +334,12 @@ batched_matrix_inverse = BatchedMatrixInverse()
 
 
 class EQCorrMvNormal(pm.Continuous):
-    def __init__(self, mu, std, corr, clust, *args, **kwargs):
+    def __init__(self, mu, std, corr, clust, nonzero=True, *args, **kwargs):
         super(EQCorrMvNormal, self).__init__(*args, **kwargs)
         self.mu, self.std, self.corr, self.clust = map(
             tt.as_tensor_variable, [mu, std, corr, clust]
         )
+        self.nonzero = nonzero
 
     def logp(self, x):
         # -1/2 (x-mu) @ Sigma^-1 @ (x-mu)^T - 1/2 log(2pi^k|Sigma|)
@@ -392,7 +393,7 @@ class EQCorrMvNormal(pm.Continuous):
         # so we need z_t @ Corr_t^-1 @ z_t^T in perfect
         # z_t @ Corr_t^-1 @ z_t^T is a sum of block terms
         # z_ct @ B_ct^-1 @ z_ct^T = (B^-1)_iict * sum(z_ct**2) + (B^-1)_ijct*sum_{i!=j}(z_ict * z_jct)
-
+        x = tt.as_tensor_variable(x)
         clust_ids, clust_pos, clust_counts = tt.extra_ops.Unique(return_inverse=True, return_counts=True)(self.clust)
         clust_order = tt.argsort(clust_pos)
         mu = self.mu
@@ -444,7 +445,8 @@ class EQCorrMvNormal(pm.Continuous):
                 + tt.log(detB).sum(-1)
             )
         )
-
+        if self.nonzero:
+            logp = tt.switch(tt.eq(x, 0).any(-1), 0., logp)
         return bound(logp,
                      -1. < corr < 1.,
                      std > 0.,
@@ -479,3 +481,7 @@ class EQCorrMvNormal(pm.Continuous):
         chol = np.linalg.cholesky(cov)
         standard_normal = np.random.standard_normal(size)
         return mu + np.dot(standard_normal, chol.swapaxes(-1, -2))
+
+
+class EQCorrMvNormalNonZero(EQCorrMvNormal):
+    def logp(self, x):
