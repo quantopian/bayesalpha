@@ -1,5 +1,6 @@
 import theano.tensor as tt
 import theano
+import theano.tensor.extra_ops
 import pymc3 as pm
 import numpy as np
 from scipy import sparse, interpolate
@@ -330,3 +331,111 @@ class BatchedMatrixInverse(tt.Op):
 
 batched_matrix_inverse = BatchedMatrixInverse()
 
+
+class EQCorrMvNormal(pm.Continuous):
+    def __init__(self, mu, std, corr, clust, *args, **kwargs):
+        super(EQCorrMvNormal, self).__init__(*args, **kwargs)
+        self.mu, self.std, self.corr, self.clust = map(
+            tt.as_tensor_variable, [mu, std, corr, clust]
+        )
+
+    def logp(self, x):
+        # -1/2 (x-mu) @ Sigma^-1 @ (x-mu)^T - 1/2 log(2pi^k|Sigma|)
+        # Sigma = diag(std) @ Corr @ diag(std)
+        # Sigma^-1 = diag(std^-1) @ Corr^-1 @ diag(std^-1)
+        # Corr is a block matrix of special form
+        #           +-----------+
+        # Corr = [[ | 1, b1, b1,|  0,  0,  0,..., 0]
+        #         [ |b1,  1, b1,|  0,  0,  0,..., 0]
+        #         [ |b1, b1,  1,|  0,  0,  0,..., 0]
+        #           +-----------+----------+
+        #         [  0,  0,  0, | 1, b2, b2|,..., 0]
+        #         [  0,  0,  0, |b2,  1, b2|,..., 0]
+        #         [  0,  0,  0, |b2, b2,  1|,..., 0]
+        #                       +----------+
+        #         [            ...                 ]
+        #         [  0,  0,  0,   0,  0,  0 ,..., 1]]
+        #
+        # Corr = [[B1,  0,  0, ...,  0]
+        #         [ 0, B2,  0, ...,  0]
+        #         [ 0,  0, B3, ...,  0]
+        #         [        ...        ]
+        #         [ 0,  0,  0, ..., Bk]]
+        #
+        # Corr^-1 = [[B1^-1,     0,      0, ...,     0]
+        #            [    0, B2^-1,      0, ...,     0]
+        #            [    0,     0,  B3^-1, ...,     0]
+        #            [              ...               ]
+        #            [    0,     0,      0, ..., Bk^-1]]
+        #
+        # |B| matrix of rank r is easy
+        # https://math.stackexchange.com/a/1732839
+        # Let D = eye(r) * (1-b)
+        # e - all ones
+        # Then B = D + b * ones((r, r))
+        # |B| = (1-b) ** r + b * r * (1-b) ** (r-1)
+        #
+        # Inverse B^-1 is easy as well
+        # https://math.stackexchange.com/a/1766118
+        # let
+        # c = 1/b + r*1/(1-b)
+        # (B^-1)ii = 1/(1-b) - 1/(c*(1-b)**2)
+        # (B^-1)ij =         - 1/(c*(1-b)**2)
+        #
+        # assuming
+        # z = (x - mu) / std
+        # we have det fix
+        # detfix = sum(log(std))
+        #
+        # now we need to compute z @ Corr^-1 @ z^T
+        # note that B can be unique per timestep
+        # so we need z_t @ Corr_t^-1 @ z_t^T in perfect
+        # z_t @ Corr_t^-1 @ z_t^T is a sum of block terms
+        # z_ct @ B_ct^-1 @ z_ct^T = (B^-1)_iict * sum(z_ct**2) + (B^-1)_ijct*sum_{i!=j}(z_ict * z_jct)
+
+        clust_ids, clust_pos, clust_counts = tt.extra_ops.Unique(return_inverse=True, return_counts=True)(self.clust)
+        clust_order = tt.argsort(clust_pos)
+        mu = self.mu
+        std = self.std
+        z = (x - mu)/std
+        z = z[..., clust_order]
+        corr = self.corr[..., clust_ids]
+        detfix = -tt.log(std).sum(-1)
+        # following the notation above
+        r = clust_counts
+        b = corr
+        detB = (1.-b) ** r + b * r * (1.-b) ** (r-1)
+        c = 1 / b + r / (1. - b)
+        invBij = -1./(c*(1.-b)**2)
+        invBii = 1./(1.-b) + invBij
+        invBij = tt.repeat(invBij, clust_counts, axis=-1)
+        invBii = tt.repeat(invBii, clust_counts, axis=-1)
+
+        mask = tt.arange(x.shape[-1])[None, :]
+        mask = tt.repeat(mask, x.shape[-1], axis=0)
+        mask = tt.maximum(mask, mask.T)
+        block_end_pos = tt.cumsum(r)
+        block_end_pos = tt.repeat(block_end_pos, clust_counts)
+        mask = tt.lt(mask, block_end_pos)
+        mask = tt.and_(mask, mask.T)
+        mask = tt.fill_diagonal(mask.astype('float32'), 0.)  # type: tt.TensorVariable
+
+        invBiizizi_sum = ((z**2) * invBii).sum(-1)
+        invBijzizj_sum = (
+            (z.dimshuffle(0, 1, 'x')
+             * mask.dimshuffle('x', 0, 1)
+             * z.dimshuffle(0, 'x', 1))
+            * invBij.dimshuffle(0, 1, 'x')
+        ).sum([-1, -2])
+        quad = invBiizizi_sum + invBijzizj_sum
+        k = pm.floatX(x.shape[-1])
+        logp = (
+            detfix
+            - .5 * (
+                quad
+                + pm.floatX(np.log(np.pi*2)) * k
+                + tt.log(detB).sum(-1)
+            )
+        )
+
+        return logp
