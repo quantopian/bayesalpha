@@ -344,10 +344,10 @@ class EQCorrMvNormal(pm.Continuous):
         # Sigma = diag(std) @ Corr @ diag(std)
         # Sigma^-1 = diag(std^-1) @ Corr^-1 @ diag(std^-1)
         # Corr is a block matrix of special form
-        #           +-----------+
-        # Corr = [[ | 1, b1, b1,|  0,  0,  0,..., 0]
-        #         [ |b1,  1, b1,|  0,  0,  0,..., 0]
-        #         [ |b1, b1,  1,|  0,  0,  0,..., 0]
+        #           +----------+
+        # Corr = [[ | 1, b1, b1|,  0,  0,  0,..., 0]
+        #         [ |b1,  1, b1|,  0,  0,  0,..., 0]
+        #         [ |b1, b1,  1|,  0,  0,  0,..., 0]
         #           +-----------+----------+
         #         [  0,  0,  0, | 1, b2, b2|,..., 0]
         #         [  0,  0,  0, |b2,  1, b2|,..., 0]
@@ -371,7 +371,6 @@ class EQCorrMvNormal(pm.Continuous):
         # |B| matrix of rank r is easy
         # https://math.stackexchange.com/a/1732839
         # Let D = eye(r) * (1-b)
-        # e - all ones
         # Then B = D + b * ones((r, r))
         # |B| = (1-b) ** r + b * r * (1-b) ** (r-1)
         #
@@ -396,10 +395,16 @@ class EQCorrMvNormal(pm.Continuous):
         clust_ids, clust_pos, clust_counts = tt.extra_ops.Unique(return_inverse=True, return_counts=True)(self.clust)
         clust_order = tt.argsort(clust_pos)
         mu = self.mu
+        corr = self.corr[..., clust_ids]
         std = self.std
+        if std.ndim == 0:
+            std = tt.repeat(std, x.shape[-1])
+        if std.ndim == 1:
+            std = std[None, :]
+        if corr.ndim == 1:
+            corr = corr[None, :]
         z = (x - mu)/std
         z = z[..., clust_order]
-        corr = self.corr[..., clust_ids]
         detfix = -tt.log(std).sum(-1)
         # following the notation above
         r = clust_counts
@@ -411,6 +416,7 @@ class EQCorrMvNormal(pm.Continuous):
         invBij = tt.repeat(invBij, clust_counts, axis=-1)
         invBii = tt.repeat(invBii, clust_counts, axis=-1)
 
+        # to compute (Corr^-1)_ijt*sum_{i!=j}(z_it * z_jt) we use masked cross products
         mask = tt.arange(x.shape[-1])[None, :]
         mask = tt.repeat(mask, x.shape[-1], axis=0)
         mask = tt.maximum(mask, mask.T)

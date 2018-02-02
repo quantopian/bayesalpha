@@ -95,7 +95,7 @@ def test_scaled_mv_normal_logp():
     np.testing.assert_allclose(logp1, logp2)
 
 
-def test_equicorr_mv_normal_logp():
+def test_equicorr_mv_normal_logp_case1():
     corrs = []
     corrsm = []
     for t in range(10):
@@ -118,6 +118,91 @@ def test_equicorr_mv_normal_logp():
 
     with pm.Model() as model2:
         bayesalpha.dists.EQCorrMvNormal('mv', mu=mean, std=scale, corr=corrs, clust=[0, 0, 1, 1], observed=obs1)
+    logp1 = model1.logp({})
+    logp2 = model2.logp({})
+    np.testing.assert_allclose(logp1, logp2)
+
+
+def test_equicorr_mv_normal_logp_case2():
+    corrs = []
+    corrsm = []
+    for t in range(10):
+        c1, c2 = .5*np.sin(t), .5*np.cos(t)
+        corrsm.append(np.array(
+                      [[1., c1, .0, 0],
+                       [c1, 1., .0, 0.],
+                       [0., 0., 1, c2],
+                       [0., 0., c2, 1.]], 'float32'))
+        corrs.append([c1, c2])
+    corrs = np.asarray(corrs)
+    corrsm = np.asarray(corrsm)
+    scale = np.exp(np.random.randn(10, 4))
+    mean = np.arange(4, dtype='float32')
+    obs = np.random.rand(10, 4)
+    obs1 = obs * scale + mean[None, :]
+    with pm.Model() as model1:
+        for i in range(10):
+            pm.MvNormal('mv%d' % i, mu=mean, cov=corrsm[i] * scale[i][None, :] * scale[i][:, None], observed=obs1[i])
+
+    with pm.Model() as model2:
+        bayesalpha.dists.EQCorrMvNormal('mv', mu=mean, std=scale,
+                                        corr=np.asarray([corrs[:, 0], np.zeros_like(corrs[:, 1]), corrs[:, 1]]).T,
+                                        clust=[0, 0, 2, 2], observed=obs1)
+    logp1 = model1.logp({})
+    logp2 = model2.logp({})
+    np.testing.assert_allclose(logp1, logp2)
+
+
+def test_equicorr_mv_normal_logp_case3():
+    corrs = []
+    corrsm = []
+    for t in range(10):
+        c1, c2 = .5*np.sin(t), .5*np.cos(t)
+        corrsm.append(np.array(
+                      [[1., 0, c1, 0],
+                       [0, 1., .0, c2],
+                       [c1, 0., 1, 0.],
+                       [0., c2, 0, 1.]], 'float32'))
+        corrs.append([c1, c2])
+    corrs = np.asarray(corrs)
+    corrsm = np.asarray(corrsm)
+    scale = np.exp(np.random.randn(10, 4))
+    mean = np.arange(4, dtype='float32')
+    obs = np.random.rand(10, 4)
+    obs1 = obs * scale + mean[None, :]
+    with pm.Model() as model1:
+        for i in range(10):
+            pm.MvNormal('mv%d' % i, mu=mean, cov=corrsm[i] * scale[i][None, :] * scale[i][:, None], observed=obs1[i])
+
+    with pm.Model() as model2:
+        bayesalpha.dists.EQCorrMvNormal('mv', mu=mean, std=scale,
+                                        corr=np.asarray([corrs[:, 0], np.zeros_like(corrs[:, 1]), corrs[:, 1]]).T,
+                                        clust=[0, 2, 0, 2], observed=obs1)
+    logp1 = model1.logp({})
+    logp2 = model2.logp({})
+    np.testing.assert_allclose(logp1, logp2)
+
+
+def test_equicorr_mv_normal_logp_case4():
+    c1, c2 = .5*np.sin(1), .5*np.cos(1)
+    corrsm = np.array(
+                  [[1., 0, c1, 0],
+                   [0, 1., .0, c2],
+                   [c1, 0., 1, 0.],
+                   [0., c2, 0, 1.]], 'float32')
+    corrs = np.asarray([c1, c2])
+
+    scale = np.exp(np.random.randn(4))
+    mean = np.arange(4, dtype='float32')
+    obs = np.random.rand(10, 4)
+    obs1 = obs * scale + mean[None, :]
+    with pm.Model() as model1:
+        pm.MvNormal('mv', mu=mean, cov=corrsm * scale[None, :] * scale[:, None], observed=obs1)
+
+    with pm.Model() as model2:
+        bayesalpha.dists.EQCorrMvNormal('mv', mu=mean, std=scale,
+                                        corr=np.asarray([corrs[0], 0, corrs[1]]),
+                                        clust=[0, 2, 0, 2], observed=obs1)
     logp1 = model1.logp({})
     logp2 = model2.logp({})
     np.testing.assert_allclose(logp1, logp2)
