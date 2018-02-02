@@ -445,3 +445,33 @@ class EQCorrMvNormal(pm.Continuous):
         )
 
         return logp
+
+    def random(self, point=None, size=None):
+        mu, std, corr, clust = draw_values([self.mu, self.std, self.corr, self.clust], point=point)
+        return self.st_random(mu, std, corr, clust, size=size)
+
+    @staticmethod
+    def st_random(mu, std, corr, clust, size=None):
+        k = mu.shape[-1]
+        if std.ndim == 0:
+            std = tt.repeat(std, k)
+        if std.ndim == 1:
+            std = std[None, :]
+        if corr.ndim == 1:
+            corr = corr[None, :]
+        clust_ids, clust_pos, clust_counts = np.unique(clust, return_inverse=True, return_counts=True)
+        corr = corr[..., clust_ids]
+        block_end_pos = np.cumsum(clust_counts)
+        block_end_pos = np.repeat(block_end_pos, clust_counts)
+        mask = np.arange(k)[None, :]
+        mask = np.repeat(mask, k, axis=0)
+        mask = np.maximum(mask, mask.T)
+        mask = (mask < block_end_pos) & (mask < block_end_pos).T
+        corr = np.repeat(corr, clust_counts, axis=-1)[..., None]
+        corr = corr * mask[None, :]
+        corr[:, np.arange(k), np.arange(k)] = 1
+        std = std[..., None]
+        cov = std * corr * std.swapaxes(-1, -2)
+        chol = np.linalg.cholesky(cov)
+        standard_normal = np.random.standard_normal(size)
+        return mu + np.dot(standard_normal, chol.swapaxes(-1, -2))
