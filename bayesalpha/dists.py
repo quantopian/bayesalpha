@@ -5,6 +5,7 @@ import pymc3 as pm
 import numpy as np
 from scipy import sparse, interpolate
 from pymc3.distributions.distribution import draw_values
+from pymc3.distributions.dist_math import bound
 
 
 class NormalNonZero(pm.Normal):
@@ -444,7 +445,10 @@ class EQCorrMvNormal(pm.Continuous):
             )
         )
 
-        return logp
+        return bound(logp,
+                     -1. < corr < 1.,
+                     std > 0.,
+                     broadcast_conditions=False)
 
     def random(self, point=None, size=None):
         mu, std, corr, clust = draw_values([self.mu, self.std, self.corr, self.clust], point=point)
