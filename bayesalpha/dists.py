@@ -459,11 +459,16 @@ class EQCorrMvNormal(pm.Continuous):
 
     def random(self, point=None, size=None):
         mu, std, corr, clust = draw_values([self.mu, self.std, self.corr, self.clust], point=point)
-        return self.st_random(mu, std, corr, clust, size=size)
+        return self.st_random(mu, std, corr, clust, size=size, _dist_shape=self.shape)
 
     @staticmethod
-    def st_random(mu, std, corr, clust, size=None):
+    def st_random(mu, std, corr, clust, size=None, _dist_shape=None):
+        mu, std, corr, clust = map(np.asarray, [mu, std, corr, clust])
+        size = pm.distributions.distribution.infer_shape(size)
+        _dist_shape = pm.distributions.distribution.infer_shape(_dist_shape)
         k = mu.shape[-1]
+        dist_shape = np.broadcast(np.broadcast(mu, std), np.zeros(_dist_shape)).shape
+        out_shape = size + dist_shape
         if std.ndim == 0:
             std = np.repeat(std, k)
         if std.ndim == 1:
@@ -496,7 +501,12 @@ class EQCorrMvNormal(pm.Continuous):
         std = std[..., None]
         cov = std * corr * std.swapaxes(-1, -2)
         chol = np.linalg.cholesky(cov)
-        standard_normal = np.random.standard_normal(size)
-        sample = mu + np.dot(standard_normal, chol.swapaxes(-1, -2))
+        standard_normal = np.random.standard_normal(tuple(size) + dist_shape)
+        # we need dot product for last dim with possibly many chols
+        # in simple case we do z @ chol.T
+        # as it done row by col we do not transpose chol before elemwise multiplication
+        sample = mu + np.sum(standard_normal[..., None] * chol, -1)
         # recall old ordering
-        return sample[..., inv_clust_order]
+        # we also get rid of unused dimension
+        return sample[..., inv_clust_order].reshape(out_shape)
+
