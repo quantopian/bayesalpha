@@ -465,12 +465,24 @@ class EQCorrMvNormal(pm.Continuous):
     def st_random(mu, std, corr, clust, size=None):
         k = mu.shape[-1]
         if std.ndim == 0:
-            std = tt.repeat(std, k)
+            std = np.repeat(std, k)
         if std.ndim == 1:
             std = std[None, :]
         if corr.ndim == 1:
             corr = corr[None, :]
         clust_ids, clust_pos, clust_counts = np.unique(clust, return_inverse=True, return_counts=True)
+        # inner representation for clusters
+        clust_order = np.argsort(clust_pos)
+        # this order aligns means and std with block matrix representation
+        # so first step is to apply this ordering for means and std
+        mu = mu[..., clust_order]
+        std = std[..., clust_order]
+        # expected output order of clusters
+        # inverse permutation
+        inv_clust_order = np.zeros_like(clust_order)
+        for i in range(len(clust_order)):
+            inv_clust_order[clust_order[i]] = i
+
         corr = corr[..., clust_ids]
         block_end_pos = np.cumsum(clust_counts)
         block_end_pos = np.repeat(block_end_pos, clust_counts)
@@ -485,4 +497,6 @@ class EQCorrMvNormal(pm.Continuous):
         cov = std * corr * std.swapaxes(-1, -2)
         chol = np.linalg.cholesky(cov)
         standard_normal = np.random.standard_normal(size)
-        return mu + np.dot(standard_normal, chol.swapaxes(-1, -2))
+        sample = mu + np.dot(standard_normal, chol.swapaxes(-1, -2))
+        # recall old ordering
+        return sample[..., inv_clust_order]
