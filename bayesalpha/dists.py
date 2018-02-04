@@ -1,3 +1,4 @@
+import functools
 import theano.tensor as tt
 import theano
 import theano.tensor.extra_ops
@@ -467,14 +468,17 @@ class EQCorrMvNormal(pm.Continuous):
         size = pm.distributions.distribution.infer_shape(size)
         _dist_shape = pm.distributions.distribution.infer_shape(_dist_shape)
         k = mu.shape[-1]
-        dist_shape = np.broadcast(np.broadcast(mu, std), np.zeros(_dist_shape)).shape
+        if corr.ndim == 1:
+            corr = corr[None, :]
+        dist_shape = functools.reduce(np.broadcast, [
+            np.zeros(_dist_shape), mu, std, np.zeros((corr.shape[0], k))
+        ]).shape
+
         out_shape = size + dist_shape
         if std.ndim == 0:
             std = np.repeat(std, k)
         if std.ndim == 1:
             std = std[None, :]
-        if corr.ndim == 1:
-            corr = corr[None, :]
         clust_ids, clust_pos, clust_counts = np.unique(clust, return_inverse=True, return_counts=True)
         # inner representation for clusters
         clust_order = np.argsort(clust_pos)
@@ -505,7 +509,7 @@ class EQCorrMvNormal(pm.Continuous):
         # we need dot product for last dim with possibly many chols
         # in simple case we do z @ chol.T
         # as it done row by col we do not transpose chol before elemwise multiplication
-        sample = mu + np.sum(standard_normal[..., None] * chol, -1)
+        sample = mu + np.sum(standard_normal[..., None, :] * chol, -1)
         # recall old ordering
         # we also get rid of unused dimension
         return sample[..., inv_clust_order].reshape(out_shape)
