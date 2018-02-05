@@ -19,7 +19,12 @@ from bayesalpha.dists import bspline_basis, GPExponential, NormalNonZero
 from bayesalpha.dists import dot as sparse_dot
 from bayesalpha.serialize import to_xarray
 from bayesalpha._version import get_versions
-from bayesalpha.plotting import plot_horizontal_dots
+try:
+    from bayesalpha.plotting import plot_horizontal_dots
+except ImportError as err:
+    warnings.warn(
+        "plotting unavailable due to the preceding ImportError."
+    )
 
 _PARAM_DEFAULTS = {
     'shrinkage': 'exponential'
