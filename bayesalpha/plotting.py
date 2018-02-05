@@ -1,15 +1,35 @@
-import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
+import warnings
+import functools
+try:
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    _has_mpl = True
+except ImportError:
+    warnings.warn('Could not import matplotlib: Plotting unavailable.')
+    _has_mpl = False
+    plt = None
+    sns = None
 
 
-def get_height(k):
+def _require_mpl(func):
+    @functools.wraps(func)
+    def inner(*args, **kwargs):
+        if not _has_mpl:
+            raise RuntimeError('Matplotlib is unavailable.')
+        return func(*args, **kwargs)
+
+    return inner
+
+
+def _get_height(k):
     return 2 + 14 * (1 - np.exp(-0.02 * k))
 
 
+@_require_mpl
 def plot_horizontal_dots(vals, sort=True, ax=None, title=None, **kwargs):
     if ax is None:
-        height = get_height(len(vals))
+        height = _get_height(len(vals))
         _, ax = plt.subplots(1, 1, figsize=(4, height))
 
     if sort:
@@ -43,10 +63,12 @@ def plot_horizontal_dots(vals, sort=True, ax=None, title=None, **kwargs):
     return ax
 
 
-def plot_correlations(corr_xarray, corr_threshold=.33, ax=None, cmap=None, **heatmap_kwargs):
+@_require_mpl
+def plot_correlations(corr_xarray, corr_threshold=.33, ax=None,
+                      cmap=None, **heatmap_kwargs):
     k = len(corr_xarray.coords['algo'])
     if ax is None:
-        w, h = get_height(k)*2+1, get_height(k)*2
+        w, h = _get_height(k)*2 + 1, _get_height(k)*2
         fig, ax = plt.subplots(2, 2, figsize=(w, h))
     else:
         fig = None
