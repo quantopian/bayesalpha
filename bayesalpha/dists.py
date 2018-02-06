@@ -419,7 +419,7 @@ class EQCorrMvNormal(pm.Continuous):
         r = clust_counts
         b = corr
         # detB = (1.-b) ** (r-1) * (1. + b * (r - 1))
-        logdetB = tt.log(1.-b) * (r-1) + tt.log1p(b * (r - 1))
+        logdetB = tt.log1p(-b) * (r-1) + tt.log1p(b * (r - 1))
         c = 1 / b + r / (1. - b)
         invBij = -1./(c*(1.-b)**2)
         invBii = 1./(1.-b) + invBij
