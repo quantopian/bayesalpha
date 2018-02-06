@@ -1,2 +1,3 @@
 include versioneer.py
 include bayesalpha/_version.py
+include requirements.txt
