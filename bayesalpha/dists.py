@@ -376,6 +376,8 @@ class EQCorrMvNormal(pm.Continuous):
         # Let D = eye(r) * (1-b)
         # Then B = D + b * ones((r, r))
         # |B| = (1-b) ** r + b * r * (1-b) ** (r-1)
+        # |B| = (1.-b) ** (r-1) * (1. + b * (r - 1))
+        # log(|B|) = log(1-b)*(r-1) + log1p(b*(r-1))
         #
         # Inverse B^-1 is easy as well
         # https://math.stackexchange.com/a/1766118
