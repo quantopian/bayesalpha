@@ -1,56 +1,60 @@
 import theano.tensor as tt
 import theano
+import theano.tensor.extra_ops
+import theano.sparse
+import theano.scalar
 import pymc3 as pm
 import numpy as np
 from scipy import sparse, interpolate
 from pymc3.distributions.distribution import draw_values
+from pymc3.distributions.dist_math import bound
 
 
 class NormalNonZero(pm.Normal):
-    def logp(self, values):
-        all_logp = pm.Normal.dist(mu=self.mu, sd=self.sd).logp(values)
-        return tt.switch(tt.eq(values, 0), 0., all_logp)
+    def logp(self, value):
+        all_logp = super(NormalNonZero, self).logp(value)
+        return tt.switch(tt.eq(value, 0), 0., all_logp)
 
 
-class ScaledMvNormal(pm.Continuous):
-    def __init__(self, mu, chol, sd_scale, *args, **kwargs):
-        super(ScaledMvNormal, self).__init__(*args, **kwargs)
-        self._mu = tt.as_tensor_variable(mu)
-        self._chol = tt.as_tensor_variable(chol)
-        self._sd_scale = tt.as_tensor_variable(sd_scale)
-        if not chol.ndim == 2:
-            raise ValueError('chol must be two-dimensional.')
+class ScaledSdMvNormalNonZero(pm.MvNormal):
+    def __init__(self, *args, **kwargs):
+        self.scale_sd = kwargs.pop('scale_sd')
+        assert not args
+        self._mu = kwargs.pop('mu')
+        if isinstance(self._mu, tt.Variable):
+            kwargs['mu'] = tt.zeros_like(self._mu)
+        else:
+            kwargs['mu'] = np.zeros_like(self._mu)
+        super(ScaledSdMvNormalNonZero, self).__init__(**kwargs)
 
     def logp(self, value):
-        mu, chol, sd_scale = self._mu, self._chol, self._sd_scale
-        if value.ndim not in [1, 2]:
-            raise ValueError('Invalid value shape. Must be two-dimensional.')
-        if value.ndim == 1:
-            value = value.reshape((-1, value.shape[0]))
+        scale_sd = self.scale_sd
+        mu = self._mu
 
-        if sd_scale.ndim == 2:
-            trafo = (value - mu) / sd_scale
-        elif sd_scale.ndim == 1:
-            trafo = (value - mu) / sd_scale[:, None]
-        else:
-            assert False
+        # properly broadcast values to work in unified way
+        if scale_sd.ndim == 0:
+            scale_sd = tt.repeat(scale_sd, value.shape[-1])
+        if scale_sd.ndim == 1:
+            scale_sd = scale_sd[None, :]
 
-        ok = ~tt.any(tt.isinf(trafo) | tt.isnan(trafo))
-        trafo = tt.switch(ok, trafo, 1)
-
-        logp = pm.MvNormal.dist(mu=tt.zeros([chol.shape[0]]),
-                                chol=chol).logp(trafo)
-        if sd_scale.ndim == 1:
-            detfix = -chol.shape[0] * tt.log(sd_scale)
-        else:
-            detfix = -tt.log(sd_scale).sum(axis=-1)
-        return tt.switch(ok, logp + detfix, -np.inf)
+        detfix = -tt.log(scale_sd).sum(axis=-1)
+        z = (value - mu)/scale_sd
+        logp = super(ScaledSdMvNormalNonZero, self).logp(z) + detfix
+        logp = tt.switch(tt.eq(value, 0).any(-1), 0., logp)
+        return logp
 
     def random(self, point=None, size=None):
-        mu, chol, sd_scale = draw_values([self._mu, self._chol, self._sd_scale],
-                                         point=point)
-        normal = pm.Normal.dist(mu=mu, chol=chol).random(point, size)
-        return normal * sd_scale[:, None]
+        r = super(ScaledSdMvNormalNonZero, self).random(point=point, size=size)
+        shape = r.shape
+        scale_sd, mu = draw_values([self.scale_sd, self._mu], point=point)
+        if scale_sd.ndim == 0:
+            scale_sd = np.repeat(scale_sd, r.shape[-1])
+        if scale_sd.ndim == 1:
+            scale_sd = scale_sd[None, :]
+        r *= scale_sd
+        r += mu
+        # reshape back just in case
+        return r.reshape(shape)
 
 
 class GPExponential(pm.Continuous):
@@ -245,3 +249,273 @@ def dot(x, y):
         raise TypeError()
 
     return _dot(x, y)
+
+
+class BatchedMatrixInverse(tt.Op):
+    """Computes the inverse of a matrix :math:`A`.
+
+    Given a square matrix :math:`A`, ``matrix_inverse`` returns a square
+    matrix :math:`A_{inv}` such that the dot product :math:`A \cdot A_{inv}`
+    and :math:`A_{inv} \cdot A` equals the identity matrix :math:`I`.
+
+    Notes
+    -----
+    When possible, the call to this op will be optimized to the call
+    of ``solve``.
+
+    """
+
+    __props__ = ()
+
+    def __init__(self):
+        pass
+
+    def make_node(self, x):
+        x = tt.as_tensor_variable(x)
+        assert x.dim == 3
+        return tt.Apply(self, [x], [x.type()])
+
+    def perform(self, node, inputs, outputs):
+        (x,) = inputs
+        (z,) = outputs
+        z[0] = np.linalg.inv(x).astype(x.dtype)
+
+    def grad(self, inputs, g_outputs):
+        r"""The gradient function should return
+
+            .. math:: V\frac{\partial X^{-1}}{\partial X},
+
+        where :math:`V` corresponds to ``g_outputs`` and :math:`X` to
+        ``inputs``. Using the `matrix cookbook
+        <http://www2.imm.dtu.dk/pubdb/views/publication_details.php?id=3274>`_,
+        one can deduce that the relation corresponds to
+
+            .. math:: (X^{-1} \cdot V^{T} \cdot X^{-1})^T.
+
+        """
+        x, = inputs
+        xi = self.__call__(x)
+        gz, = g_outputs
+        # TT.dot(gz.T,xi)
+        gx = tt.batched_dot(xi, gz.transpose(0, 2, 1))
+        gx = tt.batched_dot(gx, xi)
+        gx = -gx.transpose(0, 2, 1)
+        return [gx]
+
+    def R_op(self, inputs, eval_points):
+        r"""The gradient function should return
+
+            .. math:: \frac{\partial X^{-1}}{\partial X}V,
+
+        where :math:`V` corresponds to ``g_outputs`` and :math:`X` to
+        ``inputs``. Using the `matrix cookbook
+        <http://www2.imm.dtu.dk/pubdb/views/publication_details.php?id=3274>`_,
+        one can deduce that the relation corresponds to
+
+            .. math:: X^{-1} \cdot V \cdot X^{-1}.
+
+        """
+        x, = inputs
+        xi = self.__call__(x)
+        ev, = eval_points
+
+        if ev is None:
+            return [None]
+
+        r = tt.batched_dot(xi, ev)
+        r = tt.batched_dot(r, xi)
+        r = -r
+        return [r]
+
+    def infer_shape(self, node, shapes):
+        return shapes
+
+
+batched_matrix_inverse = BatchedMatrixInverse()
+
+
+class EQCorrMvNormal(pm.Continuous):
+    def __init__(self, mu, std, corr, clust, nonzero=True, *args, **kwargs):
+        super(EQCorrMvNormal, self).__init__(*args, **kwargs)
+        self.mu, self.std, self.corr, self.clust = map(
+            tt.as_tensor_variable, [mu, std, corr, clust]
+        )
+        self.nonzero = nonzero
+
+    def logp(self, x):
+        # -1/2 (x-mu) @ Sigma^-1 @ (x-mu)^T - 1/2 log(2pi^k|Sigma|)
+        # Sigma = diag(std) @ Corr @ diag(std)
+        # Sigma^-1 = diag(std^-1) @ Corr^-1 @ diag(std^-1)
+        # Corr is a block matrix of special form
+        #           +----------+
+        # Corr = [[ | 1, b1, b1|,  0,  0,  0,..., 0]
+        #         [ |b1,  1, b1|,  0,  0,  0,..., 0]
+        #         [ |b1, b1,  1|,  0,  0,  0,..., 0]
+        #           +-----------+----------+
+        #         [  0,  0,  0, | 1, b2, b2|,..., 0]
+        #         [  0,  0,  0, |b2,  1, b2|,..., 0]
+        #         [  0,  0,  0, |b2, b2,  1|,..., 0]
+        #                       +----------+
+        #         [            ...                 ]
+        #         [  0,  0,  0,   0,  0,  0 ,..., 1]]
+        #
+        # Corr = [[B1,  0,  0, ...,  0]
+        #         [ 0, B2,  0, ...,  0]
+        #         [ 0,  0, B3, ...,  0]
+        #         [        ...        ]
+        #         [ 0,  0,  0, ..., Bk]]
+        #
+        # Corr^-1 = [[B1^-1,     0,      0, ...,     0]
+        #            [    0, B2^-1,      0, ...,     0]
+        #            [    0,     0,  B3^-1, ...,     0]
+        #            [              ...               ]
+        #            [    0,     0,      0, ..., Bk^-1]]
+        #
+        # |B| matrix of rank r is easy
+        # https://math.stackexchange.com/a/1732839
+        # Let D = eye(r) * (1-b)
+        # Then B = D + b * ones((r, r))
+        # |B| = (1-b) ** r + b * r * (1-b) ** (r-1)
+        # |B| = (1.-b) ** (r-1) * (1. + b * (r - 1))
+        # log(|B|) = log(1-b)*(r-1) + log1p(b*(r-1))
+        #
+        # Inverse B^-1 is easy as well
+        # https://math.stackexchange.com/a/1766118
+        # let
+        # c = 1/b + r*1/(1-b)
+        # (B^-1)ii = 1/(1-b) - 1/(c*(1-b)**2)
+        # (B^-1)ij =         - 1/(c*(1-b)**2)
+        #
+        # assuming
+        # z = (x - mu) / std
+        # we have det fix
+        # detfix = -sum(log(std))
+        #
+        # now we need to compute z @ Corr^-1 @ z^T
+        # note that B can be unique per timestep
+        # so we need z_t @ Corr_t^-1 @ z_t^T in perfect
+        # z_t @ Corr_t^-1 @ z_t^T is a sum of block terms
+        # quad = z_ct @ B_ct^-1 @ z_ct^T = (B^-1)_iict * sum(z_ct**2) + (B^-1)_ijct*sum_{i!=j}(z_ict * z_jct)
+        #
+        # finally all terms are computed explicitly
+        # logp = detfix - 1/2 * ( quad + log(pi*2) * k + log(|B|) )
+
+        x = tt.as_tensor_variable(x)
+        clust_ids, clust_pos, clust_counts = tt.extra_ops.Unique(return_inverse=True, return_counts=True)(self.clust)
+        clust_order = tt.argsort(clust_pos)
+        mu = self.mu
+        corr = self.corr[..., clust_ids]
+        std = self.std
+        if std.ndim == 0:
+            std = tt.repeat(std, x.shape[-1])
+        if std.ndim == 1:
+            std = std[None, :]
+        if corr.ndim == 1:
+            corr = corr[None, :]
+        z = (x - mu)/std
+        z = z[..., clust_order]
+        detfix = -tt.log(std).sum(-1)
+        # following the notation above
+        r = clust_counts
+        b = corr
+        # detB = (1.-b) ** (r-1) * (1. + b * (r - 1))
+        logdetB = tt.log1p(-b) * (r-1) + tt.log1p(b * (r - 1))
+        c = 1 / b + r / (1. - b)
+        invBij = -1./(c*(1.-b)**2)
+        invBii = 1./(1.-b) + invBij
+        invBij = tt.repeat(invBij, clust_counts, axis=-1)
+        invBii = tt.repeat(invBii, clust_counts, axis=-1)
+
+        # to compute (Corr^-1)_ijt*sum_{i!=j}(z_it * z_jt) we use masked cross products
+        mask = tt.arange(x.shape[-1])[None, :]
+        mask = tt.repeat(mask, x.shape[-1], axis=0)
+        mask = tt.maximum(mask, mask.T)
+        block_end_pos = tt.cumsum(r)
+        block_end_pos = tt.repeat(block_end_pos, clust_counts)
+        mask = tt.lt(mask, block_end_pos)
+        mask = tt.and_(mask, mask.T)
+        mask = tt.fill_diagonal(mask.astype('float32'), 0.)  # type: tt.TensorVariable
+
+        invBiizizi_sum = ((z**2) * invBii).sum(-1)
+        invBijzizj_sum = (
+            (z.dimshuffle(0, 1, 'x')
+             * mask.dimshuffle('x', 0, 1)
+             * z.dimshuffle(0, 'x', 1))
+            * invBij.dimshuffle(0, 1, 'x')
+        ).sum([-1, -2])
+        quad = invBiizizi_sum + invBijzizj_sum
+        k = pm.floatX(x.shape[-1])
+        logp = (
+            detfix
+            - .5 * (
+                quad
+                + pm.floatX(np.log(np.pi*2)) * k
+                + logdetB.sum(-1)
+            )
+        )
+        if self.nonzero:
+            logp = tt.switch(tt.eq(x, 0).any(-1), 0., logp)
+        return bound(logp,
+                     tt.gt(corr, -1.),
+                     tt.lt(corr, 1.),
+                     tt.gt(std, 0.),
+                     broadcast_conditions=False)
+
+    def random(self, point=None, size=None):
+        mu, std, corr, clust = draw_values([self.mu, self.std, self.corr, self.clust], point=point)
+        return self.st_random(mu, std, corr, clust, size=size, _dist_shape=self.shape)
+
+    @staticmethod
+    def st_random(mu, std, corr, clust, size=None, _dist_shape=None):
+        mu, std, corr, clust = map(np.asarray, [mu, std, corr, clust])
+        size = pm.distributions.distribution.infer_shape(size)
+        _dist_shape = pm.distributions.distribution.infer_shape(_dist_shape)
+        k = mu.shape[-1]
+        if corr.ndim == 1:
+            corr = corr[None, :]
+        dist_shape = np.broadcast(
+            np.zeros(_dist_shape),
+            mu, std,
+            np.zeros((corr.shape[0], k))
+        ).shape
+
+        out_shape = size + dist_shape
+        if std.ndim == 0:
+            std = np.repeat(std, k)
+        if std.ndim == 1:
+            std = std[None, :]
+        clust_ids, clust_pos, clust_counts = np.unique(clust, return_inverse=True, return_counts=True)
+        # inner representation for clusters
+        clust_order = np.argsort(clust_pos)
+        # this order aligns means and std with block matrix representation
+        # so first step is to apply this ordering for means and std
+        mu = mu[..., clust_order]
+        std = std[..., clust_order]
+        # expected output order of clusters
+        # inverse permutation
+        inv_clust_order = np.zeros_like(clust_order)
+        for i in range(len(clust_order)):
+            inv_clust_order[clust_order[i]] = i
+
+        corr = corr[..., clust_ids]
+        block_end_pos = np.cumsum(clust_counts)
+        block_end_pos = np.repeat(block_end_pos, clust_counts)
+        mask = np.arange(k)[None, :]
+        mask = np.repeat(mask, k, axis=0)
+        mask = np.maximum(mask, mask.T)
+        mask = (mask < block_end_pos) & (mask < block_end_pos).T
+        corr = np.repeat(corr, clust_counts, axis=-1)[..., None]
+        corr = corr * mask[None, :]
+        corr[:, np.arange(k), np.arange(k)] = 1
+        std = std[..., None]
+        cov = std * corr * std.swapaxes(-1, -2)
+        chol = np.linalg.cholesky(cov)
+        standard_normal = np.random.standard_normal(tuple(size) + dist_shape)
+        # we need dot product for last dim with possibly many chols
+        # in simple case we do z @ chol.T
+        # as it done row by col we do not transpose chol before elemwise multiplication
+        sample = mu + np.sum(standard_normal[..., None, :] * chol, -1)
+        # recall old ordering
+        # we also get rid of unused dimension
+        return sample[..., inv_clust_order].reshape(out_shape)
+

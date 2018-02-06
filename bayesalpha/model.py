@@ -4,6 +4,7 @@ import warnings
 import numpy as np
 from scipy import sparse, stats
 import theano
+import theano.sparse
 import theano.tensor as tt
 import pymc3 as pm
 import json
@@ -15,14 +16,20 @@ import pandas as pd
 import cvxpy
 import empyrical
 
-from bayesalpha.dists import bspline_basis, GPExponential, NormalNonZero
+from bayesalpha.dists import (
+    bspline_basis,
+    GPExponential,
+    NormalNonZero,
+    ScaledSdMvNormalNonZero
+)
 from bayesalpha.dists import dot as sparse_dot
 from bayesalpha.serialize import to_xarray
 from bayesalpha._version import get_versions
-from bayesalpha.plotting import plot_horizontal_dots
+import bayesalpha.plotting
 
 _PARAM_DEFAULTS = {
-    'shrinkage': 'exponential'
+    'shrinkage': 'exponential',
+    'corr_type': 'diag',
 }
 
 
@@ -68,7 +75,6 @@ class ModelBuilder(object):
             if len(factors.columns) > 0 and not self._predict:
                 factors_mu = self._build_factors()
                 mu = mu + factors_mu
-
             self._build_likelihood(mu, vlt, observed=data.values.T)
 
         if self.params:
@@ -109,25 +115,55 @@ class ModelBuilder(object):
 
         return Bx_log_vlt, Bx_gains
 
-    def _build_volatility(self, Bx_log_vlt):
+    def _build_log_volatility_mean(self):
+        self.corr_type = corr_type = self.params.pop('corr_type')
+        k = self.n_algos
+        if corr_type == 'diag':
+            log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
+        elif corr_type == 'dense':
+            vlt_mu_dist = pm.Lognormal.dist(mu=-3, sd=1, shape=k)
+            chol_cov_packed = pm.LKJCholeskyCov('chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
+            chol_cov = pm.expand_packed_triangular(k, chol_cov_packed)
+            cov = tt.dot(chol_cov, chol_cov.T)
+            variance_mu = tt.diag(cov)
+            corr = cov / (variance_mu[:, None] * variance_mu[None, :]) ** .5
+            pm.Deterministic('chol_cov_mu', chol_cov)
+            pm.Deterministic('cov_mu', cov)
+            pm.Deterministic('corr_mu', corr)
+            # important, add new coordinate
+            self.coords['algo_chol'] = pd.RangeIndex(k * (k + 1) // 2)
+            self.coords['algo_'] = self.coords['algo']
+            self.dims['chol_cov_packed_mu'] = ('algo_chol',)
+            self.dims['cov_mu'] = ('algo', 'algo_')
+            self.dims['corr_mu'] = ('algo', 'algo_')
+            self.dims['chol_cov_mu'] = ('algo', 'algo_')
+            log_vlt_mu = pm.Deterministic('log_vlt_mu', tt.log(variance_mu) / 2.)
+        else:
+            raise NotImplementedError
+        self.dims['log_vlt_mu'] = ('algo',)
+        return log_vlt_mu
+
+    def _build_log_volatility_time(self):
         k = self.n_algos
         n_knots_vlt = len(self.coords['time_raw_vlt'])
 
         log_vlt_time_alpha = pm.HalfNormal('log_vlt_time_alpha', sd=0.1)
         log_vlt_time_sd = pm.HalfNormal('log_vlt_time_sd', sd=0.5, shape=k)
         self.dims['log_vlt_time_sd'] = ('algo',)
-
-        log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
-        self.dims['log_vlt_mu'] = ('algo',)
         log_vlt_time_raw = GPExponential(
             'log_vlt_time_raw', mu=0, alpha=log_vlt_time_alpha,
             sigma=1, shape=(k, n_knots_vlt))
         self.dims['log_vlt_time_raw'] = ('algo', 'time_raw_vlt')
-        log_vlt_raw = (log_vlt_mu[:, None]
-                       + log_vlt_time_sd[:, None] * log_vlt_time_raw)
-        log_vlt = sparse_dot(Bx_log_vlt, log_vlt_raw.T).T
+        return log_vlt_time_sd[:, None] * log_vlt_time_raw
 
+    def _build_volatility(self, Bx_log_vlt):
+        log_vlt_mu = self._build_log_volatility_mean()
+        log_vlt_time_raw = self._build_log_volatility_time()
+        log_vlt_time = sparse_dot(Bx_log_vlt, log_vlt_time_raw.T).T
+        log_vlt = log_vlt_time + log_vlt_mu[:, None]
+        pm.Deterministic('log_vlt_time', log_vlt_time)
         pm.Deterministic('log_vlt', log_vlt)
+        self.dims['log_vlt_time'] = ('algo', 'time')
         self.dims['log_vlt'] = ('algo', 'time')
         vlt = tt.exp(log_vlt)
         return vlt
@@ -237,7 +273,18 @@ class ModelBuilder(object):
         return gains_time
 
     def _build_likelihood(self, mu, sd, observed):
-        NormalNonZero('y', mu=mu, sd=sd, observed=observed)
+        corr_type = self.corr_type
+        if corr_type == 'diag':
+            NormalNonZero('y', mu=mu, sd=sd, observed=observed)
+        elif corr_type == 'dense':
+            # mu, sd  --`shape`-- (algo, time)
+            # mv needs (time, algo)
+            ScaledSdMvNormalNonZero('y', mu=mu.T,
+                                    chol=self.model.named_vars['chol_cov_mu'],
+                                    scale_sd=tt.exp(self.model.named_vars['log_vlt_time'].T),
+                                    observed=observed.T)
+        else:
+            raise NotImplementedError
         if self._predict:
             self.dims['mu'] = ('algo', 'time')
             pm.Deterministic('mu', mu)
@@ -300,7 +347,7 @@ class FitResult:
     def __init__(self, trace):
         self._trace = trace
 
-    def save(self, filename, group, **args):
+    def save(self, filename, group=None, **args):
         """Save the results to a netcdf file."""
         self._trace.to_netcdf(filename, group=group, **args)
 
@@ -376,7 +423,7 @@ class FitResult:
 
         xlabel = 'P(gains ~ 0)' if rope else 'P(gains > 0)'
 
-        ax = plot_horizontal_dots(
+        ax = bayesalpha.plotting.plot_horizontal_dots(
             vals,
             sort=sort,
             ax=ax,
@@ -385,6 +432,14 @@ class FitResult:
         )
 
         return ax
+
+    def plot_corr(self, algos=None, corr_threshold=.33, ax=None, cmap=None, **heatmap_kwargs):
+        corr = self.trace['corr_mu']
+        if algos is not None:
+            corr = corr.loc[dict(algo=algos, algo_=algos)]
+        return bayesalpha.plotting.plot_correlations(
+            corr_xarray=corr, ax=ax, corr_threshold=corr_threshold,
+            cmap=cmap, **heatmap_kwargs)
 
     def gains_pos_prob(self):
         return (
@@ -556,7 +611,7 @@ class Optimizer(object):
 
 
 def fit_population(data, algos=None, sampler_args=None, save_data=True,
-                   seed=None, factors=None, **params):
+                   seed=None, factors=None, sampler_type='mcmc', **params):
     """Fit the model to daily returns.
 
     Parameters
@@ -576,6 +631,8 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
     seed : int
         Seed for random number generation in PyMC3.
     """
+    if sampler_type not in {'mcmc', 'vi'}:
+        raise ValueError("sampler_type not in {'mcmc', 'vi'}")
     _check_data(data)
     params_ = _PARAM_DEFAULTS.copy()
     params_.update(params)
@@ -602,7 +659,10 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
     with model:
         args = {} if sampler_args is None else sampler_args
         with warnings.catch_warnings(record=True) as warns:
-            trace = pm.sample(**args)
+            if sampler_type == 'mcmc':
+                trace = pm.sample(**args)
+            else:
+                trace = pm.fit(**args).sample(args.get('draws', 500))
     if warns:
         warnings.warn('Problems during sampling. Inspect `result.warnings`.')
     trace = to_xarray(trace, coords, dims)
@@ -680,8 +740,10 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
 
     if population_fit is None:
         trace_shrinkage = None
+        trace_corr = None
     else:
         trace_shrinkage = population_fit.params['shrinkage']
+        trace_corr = population_fit.params['corr']
 
     shrinkage = params.pop('shrinkage', trace_shrinkage)
     if shrinkage is None:
