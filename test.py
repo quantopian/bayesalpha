@@ -78,15 +78,32 @@ def test_fit_population_vi(observations, algo_meta, Sigma_type):
     )
 
 
-def test_scaled_mv_normal_logp():
+def test_scaled_mv_normal_logp_case1():
     cov = np.array([[0.246, 0.048], [0.048, 0.93]], 'float32')
     mean = np.arange(2)
     obs = np.random.rand(10, 2)
-    scale = np.arange(20).reshape(10, 2)
-    obs1 = obs * scale + mean[None, :]
+    scale = np.arange(1, 21).reshape(10, 2)
+    obs1 = obs * scale + mean
     with pm.Model() as model1:
         for i in range(10):
             pm.MvNormal('mv%d' % i, mu=mean, cov=cov * scale[i][None, :] * scale[i][:, None], observed=obs1[i])
+
+    with pm.Model() as model2:
+        bayesalpha.dists.ScaledSdMvNormalNonZero('mv', mu=mean, cov=cov, scale_sd=scale, observed=obs1)
+    logp1 = model1.logp({})
+    logp2 = model2.logp({})
+    np.testing.assert_allclose(logp1, logp2)
+
+
+def test_scaled_mv_normal_logp_case2():
+    cov = np.array([[0.246, 0.048], [0.048, 0.93]], 'float32')
+    mean = np.arange(2)
+    obs = np.random.rand(10, 2)
+    scale = np.arange(1, 3)
+    obs1 = obs * scale + mean
+    with pm.Model() as model1:
+        for i in range(10):
+            pm.MvNormal('mv%d' % i, mu=mean, cov=cov * scale[None, :] * scale[:, None], observed=obs1[i])
 
     with pm.Model() as model2:
         bayesalpha.dists.ScaledSdMvNormalNonZero('mv', mu=mean, cov=cov, scale_sd=scale, observed=obs1)

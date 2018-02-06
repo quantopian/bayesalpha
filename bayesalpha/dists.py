@@ -1,7 +1,8 @@
-import functools
 import theano.tensor as tt
 import theano
 import theano.tensor.extra_ops
+import theano.sparse
+import theano.scalar
 import pymc3 as pm
 import numpy as np
 from scipy import sparse, interpolate
@@ -28,33 +29,32 @@ class ScaledSdMvNormalNonZero(pm.MvNormal):
 
     def logp(self, value):
         scale_sd = self.scale_sd
-        if scale_sd.ndim == 1:
-            detfix = -pm.floatX(self._mu.shape[-1]) * tt.log(scale_sd)
-        else:
-            detfix = -tt.log(scale_sd).sum(axis=-1)
         mu = self._mu
-        if value.ndim not in [1, 2]:
-            raise ValueError('Invalid value shape. Must be two-dimensional.')
-        if value.ndim == 1:
-            value = value.reshape((-1, value.shape[0]))
-        if scale_sd.ndim == 2:
-            trafo = (value - mu) / scale_sd
-        elif scale_sd.ndim == 1:
-            trafo = (value - mu) / scale_sd[None, :]
-        else:
-            assert False
-        ok = ~tt.any(tt.isinf(trafo) | tt.isnan(trafo))
-        trafo = tt.switch(ok, trafo, 0.)
-        logp = super(ScaledSdMvNormalNonZero, self).logp(trafo) + detfix
+
+        # properly broadcast values to work in unified way
+        if scale_sd.ndim == 0:
+            scale_sd = tt.repeat(scale_sd, value.shape[-1])
+        if scale_sd.ndim == 1:
+            scale_sd = scale_sd[None, :]
+
+        detfix = -tt.log(scale_sd).sum(axis=-1)
+        z = (value - mu)/scale_sd
+        logp = super(ScaledSdMvNormalNonZero, self).logp(z) + detfix
         logp = tt.switch(tt.eq(value, 0).any(-1), 0., logp)
-        return tt.switch(ok, logp, -np.inf)
+        return logp
 
     def random(self, point=None, size=None):
         r = super(ScaledSdMvNormalNonZero, self).random(point=point, size=size)
+        shape = r.shape
         scale_sd, mu = draw_values([self.scale_sd, self._mu], point=point)
+        if scale_sd.ndim == 0:
+            scale_sd = np.repeat(scale_sd, r.shape[-1])
+        if scale_sd.ndim == 1:
+            scale_sd = scale_sd[None, :]
         r *= scale_sd
         r += mu
-        return r
+        # reshape back just in case
+        return r.reshape(shape)
 
 
 class GPExponential(pm.Continuous):
@@ -416,7 +416,8 @@ class EQCorrMvNormal(pm.Continuous):
         # following the notation above
         r = clust_counts
         b = corr
-        detB = (1.-b) ** r + b * r * (1.-b) ** (r-1)
+        # detB = (1.-b) ** (r-1) * (1. + b * (r - 1))
+        logdetB = tt.log(1.-b) * (r-1) + tt.log1p(b * (r - 1))
         c = 1 / b + r / (1. - b)
         invBij = -1./(c*(1.-b)**2)
         invBii = 1./(1.-b) + invBij
@@ -447,7 +448,7 @@ class EQCorrMvNormal(pm.Continuous):
             - .5 * (
                 quad
                 + pm.floatX(np.log(np.pi*2)) * k
-                + tt.log(detB).sum(-1)
+                + logdetB.sum(-1)
             )
         )
         if self.nonzero:
@@ -470,9 +471,11 @@ class EQCorrMvNormal(pm.Continuous):
         k = mu.shape[-1]
         if corr.ndim == 1:
             corr = corr[None, :]
-        dist_shape = functools.reduce(np.broadcast, [
-            np.zeros(_dist_shape), mu, std, np.zeros((corr.shape[0], k))
-        ]).shape
+        dist_shape = np.broadcast(
+            np.zeros(_dist_shape),
+            mu, std,
+            np.zeros((corr.shape[0], k))
+        ).shape
 
         out_shape = size + dist_shape
         if std.ndim == 0:
