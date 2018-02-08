@@ -334,6 +334,20 @@ class BatchedMatrixInverse(tt.Op):
 batched_matrix_inverse = BatchedMatrixInverse()
 
 
+class RepeatMat(tt.Op):
+    itypes = (tt.lvector, )
+    otypes = (tt.matrix, )
+
+    def perform(self, node, inputs, output_storage, params=None):
+        repeats, = inputs
+        repeat_mat = np.zeros((repeats.shape[0], repeats.sum()), 'float32')
+        begin_pos = 0
+        for i, end_pos in enumerate(repeats.cumsum()):
+            repeat_mat[i, begin_pos:end_pos] = 1
+            begin_pos = end_pos
+        output_storage[0][0] = repeat_mat
+
+
 class EQCorrMvNormal(pm.Continuous):
     def __init__(self, mu, std, corr, clust, nonzero=True, *args, **kwargs):
         super(EQCorrMvNormal, self).__init__(*args, **kwargs)
@@ -341,6 +355,7 @@ class EQCorrMvNormal(pm.Continuous):
             tt.as_tensor_variable, [mu, std, corr, clust]
         )
         self.nonzero = nonzero
+        self.mean = self.median = self.mode = self.mu = self.mu
 
     def logp(self, x):
         # -1/2 (x-mu) @ Sigma^-1 @ (x-mu)^T - 1/2 log(2pi^k|Sigma|)
@@ -403,6 +418,7 @@ class EQCorrMvNormal(pm.Continuous):
         x = tt.as_tensor_variable(x)
         clust_ids, clust_pos, clust_counts = tt.extra_ops.Unique(return_inverse=True, return_counts=True)(self.clust)
         clust_order = tt.argsort(clust_pos)
+
         mu = self.mu
         corr = self.corr[..., clust_ids]
         std = self.std
@@ -423,8 +439,11 @@ class EQCorrMvNormal(pm.Continuous):
         c = 1 / b + r / (1. - b)
         invBij = -1./(c*(1.-b)**2)
         invBii = 1./(1.-b) + invBij
-        invBij = tt.repeat(invBij, clust_counts, axis=-1)
-        invBii = tt.repeat(invBii, clust_counts, axis=-1)
+        repeat_clust_mat = RepeatMat().__call__(clust_counts)
+        invBii = invBii.dot(repeat_clust_mat)
+        invBij = invBij.dot(repeat_clust_mat)
+        # invBij = tt.repeat(invBij, clust_counts, axis=-1)
+        # invBii = tt.repeat(invBii, clust_counts, axis=-1)
 
         # to compute (Corr^-1)_ijt*sum_{i!=j}(z_it * z_jt) we use masked cross products
         mask = tt.arange(x.shape[-1])[None, :]
