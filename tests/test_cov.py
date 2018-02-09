@@ -69,6 +69,10 @@ def test_fit_population(observations, algo_meta, Sigma_type):
             observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
             corr_type=Sigma_type, clust=[0, 1]
         )
+        trace = bayesalpha.fit_population(
+            observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
+            corr_type=Sigma_type, n_clust=2,
+        )
     else:
         trace = bayesalpha.fit_population(
             observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},

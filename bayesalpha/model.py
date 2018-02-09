@@ -243,27 +243,40 @@ class ModelBuilder(object):
 
     def _build_eqcorr(self):
         self.dims['corr'] = ('cluster', 'time')
-        self.dims['clust'] = ('cluster', )
+        self.dims['clust'] = ('algo', )
         clust = self.params.pop('clust')
         if isinstance(clust, str) and clust == 'infer':
             self.n_clust = self.params.pop('n_clust')
-            p = pm.Dirichlet('clust_probs', 1., shape=(self.n_clust, ))
-            clust = pm.Categorical('clust', p, shape=(self.n_clust, ))
+            self.dims['clust_probs'] = ('algo', 'cluster')
+            p = pm.Dirichlet('clust_probs', np.ones(self.n_clust), shape=(self.n_algos, self.n_clust))
+            pm.Categorical('clust', p, shape=(self.n_algos, ))
+            break_symmetry = True
         else:
-            self.n_clust = len(clust)
-        pm.Deterministic('clust', tt.as_tensor_variable(clust))
+            self.n_clust = max(clust)+1
+            pm.Deterministic('clust', tt.as_tensor_variable(clust))
+            break_symmetry = False
 
         self.coords['cluster'] = list(range(0, self.n_clust))
         Bx_corr = self._build_splines_corr()
-        corr_logit_mu = self._build_corr_logit_mean()
+        corr_logit_mu = self._build_corr_logit_mean(break_symmetry)
         corr_logit_time = self._build_corr_logit_time(Bx_corr)
         corr_logit = corr_logit_mu[:, None] + corr_logit_time
         corr = pm.math.sigmoid(corr_logit)
         return pm.Deterministic('corr', corr)
 
-    def _build_corr_logit_mean(self):
+    def _build_corr_logit_mean(self, break_symmetry):
         self.dims['corr_logit_mu'] = ('cluster',)
-        corr_logit_mu = pm.Normal('corr_logit_mu', mu=-5, shape=(self.n_clust, ))  # type: tt.TensorVariable
+        corr_logit_mu = pm.Normal('corr_logit_mu', mu=-5, shape=(self.n_clust, ),
+                                  testval=np.arange(self.n_clust)-2.5)  # type: tt.TensorVariable
+        if break_symmetry:
+            # break the symmetry!!! *rage*
+            pm.Potential(
+                'order_means_potential',
+                tt.switch(
+                    tt.all(
+                        tt.gt(corr_logit_mu[1:], corr_logit_mu[:-1])
+                    ), 0., -np.inf)
+            )
         return corr_logit_mu
 
     def _build_splines_corr(self):
@@ -298,7 +311,7 @@ class ModelBuilder(object):
                 'corr_logit_time_sd_sd', tt.exp(log_corr_time_sd_sd))
         else:
             corr_time_sd_sd = pm.HalfStudentT(
-                'corr_logit_time_sd_sd', nu=3, sd=0.1)
+                'corr_logit_time_sd_sd', nu=3, sd=4)
             pm.Deterministic('log_corr_logit_time_sd_sd', tt.log(corr_time_sd_sd))
         corr_logit_time_sd_raw = pm.HalfNormal('corr_logit_time_sd_raw', shape=k)
         corr_logit_time_sd = pm.Deterministic(
