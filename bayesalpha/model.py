@@ -79,6 +79,8 @@ class ModelBuilder(object):
                 mu = mu + factors_mu
             if self.corr_type == 'eqcorr':
                 self._build_eqcorr()
+            else:
+                self.params.pop('clust')  # not needed
             self._build_likelihood(mu, vlt, observed=data.values.T)
 
         if self.params:
