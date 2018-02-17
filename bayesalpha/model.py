@@ -276,6 +276,12 @@ class ModelBuilder(object):
         corr_type = self.corr_type
         if corr_type == 'diag':
             NormalNonZero('y', mu=mu, sd=sd, observed=observed)
+            if self._predict:
+                self.dims['mu'] = ('algo', 'time')
+                pm.Deterministic('mu', mu)
+                self.dims['vlt'] = ('algo', 'time')
+                pm.Deterministic('vlt', sd)
+
         elif corr_type == 'dense':
             # mu, sd  --`shape`-- (algo, time)
             # mv needs (time, algo)
@@ -283,14 +289,11 @@ class ModelBuilder(object):
                                     chol=self.model.named_vars['chol_cov_mu'],
                                     scale_sd=tt.exp(self.model.named_vars['log_vlt_time'].T),
                                     observed=observed.T)
+            if self._predict:
+                self.dims['mu'] = ('algo', 'time')
+                pm.Deterministic('mu', mu)
         else:
             raise NotImplementedError
-        if self._predict:
-            self.dims['mu'] = ('algo', 'time')
-            pm.Deterministic('mu', mu)
-        if self._predict:
-            self.dims['vlt'] = ('algo', 'time')
-            pm.Deterministic('vlt', sd)
 
     def _build_factors(self):
         self.dims.update({
@@ -313,7 +316,10 @@ class ModelBuilder(object):
             'log_vlt_time_raw': lambda: np.random.randn(n_algos, n_vlt),
             'gains_time_raw': lambda: np.random.randn(n_algos, n_gains),
         }
-        compute_vars = ['mu', 'vlt']
+        if self.corr_type == 'diag':
+            compute_vars = ['mu', 'vlt']
+        elif self.corr_type == 'dense':
+            compute_vars = ['mu', 'vlt']
         delete_vars = ['gains_time', 'log_vlt', 'mu', 'vlt']
         input_vars = [var.name for var in self.model.unobserved_RVs
                       if (not var.name.endswith('_')
