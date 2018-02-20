@@ -11,9 +11,9 @@ import pytest
 @pytest.fixture(
     'module',
     [
-        'diag',
-        'dense',
-        #'time-varying'
+       # 'diag',
+       # 'dense',
+        'eqcorr'
     ])
 def Sigma_type(request):
     return request.param
@@ -33,7 +33,7 @@ def date_range(T):
 def Sigma(Sigma_type, T):
     if Sigma_type == 'diag':
         return np.matrix([[0.000246, 0.], [0., 0.000093]], 'float32')
-    elif Sigma_type == 'dense':
+    elif Sigma_type == 'dense' or Sigma_type == 'eqcorr':
         return np.matrix([[0.000246, 0.000048], [0.000048, 0.000093]], 'float32')
     else:
         raise KeyError(Sigma_type)
@@ -64,18 +64,36 @@ def algo_meta(date_range, T):
 
 
 def test_fit_population(observations, algo_meta, Sigma_type):
-    trace = bayesalpha.fit_population(
-        observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
-        corr_type=Sigma_type
-    )
+    if Sigma_type == 'eqcorr':
+        trace = bayesalpha.fit_population(
+            observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
+            corr_type=Sigma_type, clust=[0, 1]
+        )
+        trace = bayesalpha.fit_population(
+            observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
+            corr_type=Sigma_type, n_clust=2,
+        )
+    else:
+        trace = bayesalpha.fit_population(
+            observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
+            corr_type=Sigma_type
+        )
 
 
 def test_fit_population_vi(observations, algo_meta, Sigma_type):
-    trace = bayesalpha.fit_population(
-        observations, algo_meta, sampler_type='vi',
-        sampler_args={'n': 1},
-        corr_type=Sigma_type
-    )
+    if Sigma_type == 'eqcorr':
+        trace = bayesalpha.fit_population(
+            observations, algo_meta, sampler_type='vi',
+            sampler_args={'n': 1},
+            corr_type=Sigma_type, clust=[0, 1]
+        )
+    else:
+        trace = bayesalpha.fit_population(
+            observations, algo_meta, sampler_type='vi',
+            sampler_args={'n': 1},
+            corr_type=Sigma_type
+        )
+
 
 
 def test_scaled_mv_normal_logp_case1():

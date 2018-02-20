@@ -20,7 +20,8 @@ from bayesalpha.dists import (
     bspline_basis,
     GPExponential,
     NormalNonZero,
-    ScaledSdMvNormalNonZero
+    ScaledSdMvNormalNonZero,
+    EQCorrMvNormal
 )
 from bayesalpha.dists import dot as sparse_dot
 from bayesalpha.serialize import to_xarray
@@ -30,6 +31,7 @@ import bayesalpha.plotting
 _PARAM_DEFAULTS = {
     'shrinkage': 'exponential',
     'corr_type': 'diag',
+    'clust': 'infer'
 }
 
 
@@ -75,6 +77,10 @@ class ModelBuilder(object):
             if len(factors.columns) > 0 and not self._predict:
                 factors_mu = self._build_factors()
                 mu = mu + factors_mu
+            if self.corr_type == 'eqcorr':
+                self._build_eqcorr()
+            else:
+                self.params.pop('clust')  # not needed
             self._build_likelihood(mu, vlt, observed=data.values.T)
 
         if self.params:
@@ -118,7 +124,7 @@ class ModelBuilder(object):
     def _build_log_volatility_mean(self):
         self.corr_type = corr_type = self.params.pop('corr_type')
         k = self.n_algos
-        if corr_type == 'diag':
+        if corr_type in ['diag', 'eqcorr']:
             log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
         elif corr_type == 'dense':
             vlt_mu_dist = pm.Lognormal.dist(mu=-3, sd=1, shape=k)
@@ -237,6 +243,89 @@ class ModelBuilder(object):
 
         return gains_all.T
 
+    def _build_eqcorr(self):
+        self.dims['corr'] = ('cluster', 'time')
+        self.dims['clust'] = ('algo', )
+        clust = self.params.pop('clust')
+        if isinstance(clust, str) and clust == 'infer':
+            self.n_clust = self.params.pop('n_clust')
+            self.dims['clust_probs'] = ('algo', 'cluster')
+            p = pm.Dirichlet('clust_probs', np.ones(self.n_clust), shape=(self.n_algos, self.n_clust))
+            pm.Categorical('clust', p, shape=(self.n_algos, ))
+            break_symmetry = True
+        else:
+            self.n_clust = max(clust)+1
+            pm.Deterministic('clust', tt.as_tensor_variable(clust))
+            break_symmetry = False
+
+        self.coords['cluster'] = list(range(0, self.n_clust))
+        Bx_corr = self._build_splines_corr()
+        corr_logit_mu = self._build_corr_logit_mean(break_symmetry)
+        corr_logit_time = self._build_corr_logit_time(Bx_corr)
+        corr_logit = corr_logit_mu[:, None] + corr_logit_time
+        corr = pm.math.sigmoid(corr_logit)
+        return pm.Deterministic('corr', corr)
+
+    def _build_corr_logit_mean(self, break_symmetry):
+        self.dims['corr_logit_mu'] = ('cluster',)
+        corr_logit_mu = pm.Normal('corr_logit_mu', mu=-5, shape=(self.n_clust, ),
+                                  testval=np.arange(self.n_clust)-2.5)  # type: tt.TensorVariable
+        if break_symmetry:
+            # break the symmetry!!! *rage*
+            pm.Potential(
+                'order_means_potential',
+                tt.switch(
+                    tt.all(
+                        tt.gt(corr_logit_mu[1:], corr_logit_mu[:-1])
+                    ), 0., -np.inf)
+            )
+        return corr_logit_mu
+
+    def _build_splines_corr(self):
+        data = self.data
+        n = data.shape[0]
+        duration = data.index[-1] - data.index[0]
+        n_knots_corr_raw = duration.days // 15
+        time_corr_raw = np.linspace(0, 1, n)
+        Bx_corr = bspline_basis(n_knots_corr_raw, time_corr_raw)
+        Bx_corr = sparse.csr_matrix(Bx_corr)
+        self.coords['time_raw_corr'] = list(range(0, n_knots_corr_raw))
+        return Bx_corr
+
+    def _build_corr_logit_time(self, Bx_corr):
+        self.dims.update({
+            'corr_logit_time_sd_raw': ('cluster',),
+            'corr_logit_time_sd': ('cluster',),
+            'log_corr_logit_time_sd': ('cluster',),
+            'corr_logit_time_raw': ('cluster', 'time_raw_corr'),
+            'corr_logit_time': ('cluster', 'time'),
+        })
+        k = self.n_clust
+        n_knots_corr = len(self.coords['time_raw_corr'])
+
+        corr_logit_time_alpha = pm.HalfNormal('corr_logit_time_alpha', sd=0.1)
+        if 'log_corr_logit_time_sd_sd_trace_mu' in self.params:
+            mu = self.params.pop('log_corr_logit_time_sd_sd_trace_mu')
+            sd = self.params.pop('log_corr_logit_time_sd_sd_trace_sd')
+            log_corr_time_sd_sd = pm.Normal(
+                'log_corr_logit_time_sd_sd', mu=mu, sd=sd)
+            corr_time_sd_sd = pm.Deterministic(
+                'corr_logit_time_sd_sd', tt.exp(log_corr_time_sd_sd))
+        else:
+            corr_time_sd_sd = pm.HalfStudentT(
+                'corr_logit_time_sd_sd', nu=3, sd=4)
+            pm.Deterministic('log_corr_logit_time_sd_sd', tt.log(corr_time_sd_sd))
+        corr_logit_time_sd_raw = pm.HalfNormal('corr_logit_time_sd_raw', shape=k)
+        corr_logit_time_sd = pm.Deterministic(
+            'corr_logit_time_sd', corr_time_sd_sd * corr_logit_time_sd_raw)
+        corr_logit_time_raw = GPExponential(
+            'corr_logit_time_raw', mu=0, alpha=corr_logit_time_alpha,
+            sigma=1, shape=(k, n_knots_corr))
+        corr_logit_time = corr_logit_time_sd[:, None] * corr_logit_time_raw
+        corr_logit_time = sparse_dot(Bx_corr, corr_logit_time.T).T
+        pm.Deterministic('corr_logit_time', corr_logit_time)
+        return corr_logit_time
+
     def _build_gains_time(self, Bx_gains):
         self.dims.update({
             'gains_time_sd_raw': ('algo',),
@@ -283,6 +372,11 @@ class ModelBuilder(object):
                                     chol=self.model.named_vars['chol_cov_mu'],
                                     scale_sd=tt.exp(self.model.named_vars['log_vlt_time'].T),
                                     observed=observed.T)
+        elif corr_type == 'eqcorr':
+            EQCorrMvNormal('y', mu=mu.T, std=sd.T,
+                           corr=self.model.named_vars['corr'].T,
+                           clust=self.model.named_vars['clust'],
+                           observed=observed.T)
         else:
             raise NotImplementedError
         if self._predict:
