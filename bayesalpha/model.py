@@ -360,6 +360,7 @@ class ModelBuilder(object):
                 returns = np.random.randn(len(algos), len(time))
                 returns = np.dot(chol, returns)
                 returns[...] *= np.exp(log_vlt_time)
+                returns[...] += mu
 
             returns = xr.DataArray(returns, coords=[algos, time])
             return returns
@@ -556,7 +557,7 @@ class FitResult:
         predict_func = model.make_predict_function()
         coords = [self.trace.chain, self.trace.sample, self.trace.algo]
         if n_repl is not None:
-            repl_coord = pd.RangeIndex(n_repl)
+            repl_coord = pd.RangeIndex(n_repl, name='sim_repl')
             coords.append(repl_coord)
         shape = [len(vals) for vals in coords]
 
@@ -582,7 +583,7 @@ class FitResult:
 
 
 class Optimizer(object):
-    def __init__(self, fit, n_days, lmda=None, factor_weights=None):
+    def __init__(self, fit, n_days, lmda=None, factor_weights=None, n_repl=10):
         """Compute a portfolio based on model predictions.
 
         Parameters
@@ -599,11 +600,11 @@ class Optimizer(object):
             TODO
         """
         self._fit = fit
-        self._returns = fit.predict_value(n_days)
+        self._returns = fit.predict_value(n_days, n_repl)
         self._problem = self._build_problem(lmda, factor_weights)
 
     def _build_problem(self, lmda_vals, factor_weights_vals):
-        n_predict = len(self._returns.chain) * len(self._returns.sample)
+        n_predict = len(self._returns.chain) * len(self._returns.sample) * len(self._returns.sim_repl)
         n_algos = len(self._returns.algo)
         lmda = cvxpy.Parameter(sign='positive', name='lambda')
         returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
@@ -617,7 +618,7 @@ class Optimizer(object):
 
         if lmda_vals is not None:
             lmda.value = lmda_vals
-        predictions = self._returns.stack(prediction=('chain', 'sample'))
+        predictions = self._returns.stack(prediction=('chain', 'sample', 'sim_repl'))
         returns.value = predictions.values.T
 
         self._lmda_p = lmda
