@@ -207,13 +207,26 @@ class ModelBuilder(object):
             gains = pm.Deterministic('gains', gains_sd * gains_raw)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'normal':
-            gains_sd = pm.HalfNormal('gains_sd', sd=0.2)
+            gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
             pm.Deterministic('log_gains_sd', tt.log(gains_sd))
+            gains_mu = pm.Normal('gains_mu', mu=0.05, sd=0.1)
             gains_raw = pm.Normal('gains_raw', shape=k)
 
             author_is = pm.Normal('author_is', shape=k)
-            gains = pm.Deterministic('gains', gains_sd * gains_raw)
+            gains = pm.Deterministic('gains', gains_sd * gains_raw + gains_mu)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
+        elif shrinkage == 'skew-normal':
+            gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
+            pm.Deterministic('log_gains_sd', tt.log(gains_sd))
+            gains_alpha = pm.Normal('gains_alpha', sd=0.3)
+            gains_mu = pm.Normal('gains_mu', mu=0.05, sd=0.1)
+            gains_raw = pm.SkewNormal(
+                'gains_raw', sd=1, mu=0, alpha=gains_alpha, shape=k)
+
+            author_is = pm.Normal('author_is', shape=k)
+            gains = pm.Deterministic('gains', gains_sd * gains_raw + gains_mu)
+            gains_all = gains[None, :] + author_is[None, :] * is_author_is
+
         elif shrinkage == 'trace-exponential':
             mu = self.params.pop('log_gains_sd_trace_mu')
             sd = self.params.pop('log_gains_sd_trace_sd')
@@ -313,15 +326,23 @@ class ModelBuilder(object):
             'log_vlt_time_raw': lambda: np.random.randn(n_algos, n_vlt),
             'gains_time_raw': lambda: np.random.randn(n_algos, n_gains),
         }
-        compute_vars = ['mu', 'vlt']
-        delete_vars = ['gains_time', 'log_vlt', 'mu', 'vlt']
+
+        if self.corr_type == 'diag':
+            compute_vars = ['mu', 'vlt']
+        elif self.corr_type == 'dense':
+            compute_vars = ['mu', 'log_vlt_time', 'chol_cov_mu']
+        else:
+            raise NotImplementedError('Unkown correlation type.')
+
+        delete_vars = ['gains_time', 'log_vlt', 'mu', 'vlt', 'log_vlt_time']
         input_vars = [var.name for var in self.model.unobserved_RVs
                       if (not var.name.endswith('_')
                           and var.name not in delete_vars)]
         outputs = [getattr(self.model, var) for var in compute_vars]
         inputs = [getattr(self.model, var) for var in input_vars]
         # downcast inputs if needed
-        vals_func = theano.function(inputs, outputs, on_unused_input='ignore', allow_input_downcast=True)
+        vals_func = theano.function(inputs, outputs, on_unused_input='ignore',
+                                    allow_input_downcast=True)
 
         algos = self.coords['algo']
         time = self.coords['time']
@@ -330,8 +351,17 @@ class ModelBuilder(object):
             for var, draw in resample_vars.items():
                 point[var] = draw()
             point = {var: point[var] for var in input_vars}
-            mu, sd = vals_func(**point)
-            returns = stats.norm(loc=mu, scale=sd).rvs()
+
+            if self.corr_type == 'diag':
+                mu, sd = vals_func(**point)
+                returns = stats.norm(loc=mu, scale=sd).rvs()
+            elif self.corr_type == 'dense':
+                mu, log_vlt_time, chol = vals_func(**point)
+                returns = np.random.randn(len(algos), len(time))
+                returns = np.dot(chol, returns)
+                returns[...] *= np.exp(log_vlt_time)
+                returns[...] += mu
+
             returns = xr.DataArray(returns, coords=[algos, time])
             return returns
 
@@ -527,7 +557,7 @@ class FitResult:
         predict_func = model.make_predict_function()
         coords = [self.trace.chain, self.trace.sample, self.trace.algo]
         if n_repl is not None:
-            repl_coord = pd.RangeIndex(n_repl)
+            repl_coord = pd.RangeIndex(n_repl, name='sim_repl')
             coords.append(repl_coord)
         shape = [len(vals) for vals in coords]
 
@@ -553,7 +583,7 @@ class FitResult:
 
 
 class Optimizer(object):
-    def __init__(self, fit, n_days, lmda=None, factor_weights=None):
+    def __init__(self, fit, n_days, lmda=None, factor_weights=None, n_repl=10):
         """Compute a portfolio based on model predictions.
 
         Parameters
@@ -570,11 +600,11 @@ class Optimizer(object):
             TODO
         """
         self._fit = fit
-        self._returns = fit.predict_value(n_days)
+        self._returns = fit.predict_value(n_days, n_repl)
         self._problem = self._build_problem(lmda, factor_weights)
 
     def _build_problem(self, lmda_vals, factor_weights_vals):
-        n_predict = len(self._returns.chain) * len(self._returns.sample)
+        n_predict = len(self._returns.chain) * len(self._returns.sample) * len(self._returns.sim_repl)
         n_algos = len(self._returns.algo)
         lmda = cvxpy.Parameter(sign='positive', name='lambda')
         returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
@@ -588,7 +618,7 @@ class Optimizer(object):
 
         if lmda_vals is not None:
             lmda.value = lmda_vals
-        predictions = self._returns.stack(prediction=('chain', 'sample'))
+        predictions = self._returns.stack(prediction=('chain', 'sample', 'sim_repl'))
         returns.value = predictions.values.T
 
         self._lmda_p = lmda
