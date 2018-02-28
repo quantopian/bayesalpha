@@ -604,16 +604,17 @@ class Optimizer(object):
         self._problem = self._build_problem(lmda, factor_weights)
 
     def _build_problem(self, lmda_vals, factor_weights_vals):
-        n_predict = len(self._returns.chain) * len(self._returns.sample) * len(self._returns.sim_repl)
+        n_predict = (len(self._returns.chain)
+                     * len(self._returns.sample)
+                     * len(self._returns.sim_repl))
         n_algos = len(self._returns.algo)
         lmda = cvxpy.Parameter(sign='positive', name='lambda')
         returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
         weights = cvxpy.Variable(n_algos, name='weights')
         portfolio_returns = returns * weights
-        loss_ret = cvxpy.exp(-lmda * portfolio_returns)
-        risk = cvxpy.sum_entries(loss_ret)
+        log_risk = cvxpy.log_sum_exp(-lmda * portfolio_returns)
         problem = cvxpy.Problem(
-            cvxpy.Minimize(risk),
+            cvxpy.Minimize(log_risk),
             [cvxpy.sum_entries(weights) == 1, weights >= 0])
 
         if lmda_vals is not None:
