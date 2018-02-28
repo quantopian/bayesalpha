@@ -620,7 +620,9 @@ class Optimizer(object):
         if lmda_vals is not None:
             lmda.value = lmda_vals
         predictions = self._returns.stack(prediction=('chain', 'sample', 'sim_repl'))
-        returns.value = predictions.values.T
+        # +1 because we want the final wealth, when we start with
+        # a unit of money.
+        returns.value = predictions.values.T + 1
 
         self._lmda_p = lmda
         self._factor_weights_p = None
