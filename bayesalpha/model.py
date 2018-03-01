@@ -583,16 +583,18 @@ class FitResult:
 
 
 class Optimizer(object):
-    def __init__(self, fit, n_days, lmda=None, factor_weights=None, n_repl=10):
+    def __init__(self, fit, predictions, utility='isoelastic', lmda=None,
+                 factor_weights=None):
         """Compute a portfolio based on model predictions.
 
         Parameters
         ----------
         fit : bayesalpha.model.FitResult
             The model fit to base the portfolio on.
-        n_days : int
-            Minimize the risk after this many days after the last
-            prediction.
+        predictions : xr.DataSet
+            Predictions as returned by fit.predict_value
+        utility : ['isoelastic', 'exp'], default='isoelastic'
+            The utility function to use.
         lmda : float
             Risk aversion parameter. This value can be overridden
             by passing a different value to `solve`.
@@ -600,10 +602,10 @@ class Optimizer(object):
             TODO
         """
         self._fit = fit
-        self._returns = fit.predict_value(n_days, n_repl)
+        self._returns = predictions
         self._problem = self._build_problem(lmda, factor_weights)
 
-    def _build_problem(self, lmda_vals, factor_weights_vals):
+    def _build_problem(self, lmda_vals, factor_weights_vals, utility='isoelastic'):
         n_predict = (len(self._returns.chain)
                      * len(self._returns.sample)
                      * len(self._returns.sim_repl))
@@ -612,14 +614,21 @@ class Optimizer(object):
         returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
         weights = cvxpy.Variable(n_algos, name='weights')
         portfolio_returns = returns * weights
-        log_risk = cvxpy.log_sum_exp(-lmda * portfolio_returns)
+        if utility == 'exp':
+            risk = cvxpy.log_sum_exp(-lmda * portfolio_returns)
+        elif utility == 'isoelastic':
+            risk = cvxpy.log_sum_exp(-lmda * cvxpy.log(portfolio_returns))
+        else:
+            raise ValueError('Unknown utility: %s' % utility)
+
         problem = cvxpy.Problem(
-            cvxpy.Minimize(log_risk),
+            cvxpy.Minimize(risk),
             [cvxpy.sum_entries(weights) == 1, weights >= 0])
 
         if lmda_vals is not None:
             lmda.value = lmda_vals
-        predictions = self._returns.stack(prediction=('chain', 'sample', 'sim_repl'))
+        predictions = self._returns.stack(
+            prediction=('chain', 'sample', 'sim_repl'))
         # +1 because we want the final wealth, when we start with
         # a unit of money.
         returns.value = predictions.values.T + 1
@@ -629,13 +638,13 @@ class Optimizer(object):
         self._weights_v = weights
         return problem
 
-    def solve(self, lmda=None, factor_weights=None):
+    def solve(self, lmda=None, factor_weights=None, **kwargs):
         """Find the optimal weights for the portfolio."""
         if lmda is not None:
             self._lmda_p.value = lmda
         if factor_weights is not None:
             self._factor_weights_p.value = factor_weights
-        self._problem.solve()
+        self._problem.solve(**kwargs)
         if self._problem.status != 'optimal':
             raise ValueError('Optimization did not converge.')
         weights = self._weights_v.value.A.ravel().copy()
