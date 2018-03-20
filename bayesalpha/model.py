@@ -34,7 +34,8 @@ _PARAM_DEFAULTS = {
 
 
 class ModelBuilder(object):
-    def __init__(self, data, algos, factors=None, predict=False, **params):
+    def __init__(self, data, algos, factors=None, predict=False,
+                 gains_factors=None, **params):
         data = data.fillna(0.)
         self._predict = predict
         self.data = data
@@ -45,11 +46,16 @@ class ModelBuilder(object):
             factors = pd.DataFrame(index=data.index, columns=[])
             factors.columns.name = 'factor'
 
+        if gains_factors is None:
+            gains_factors = pd.DataFrame(index=data.index, columns=[])
+            gains_factors.columns.name = 'gains_factor'
+
         # The build functions add items when appropriate
         self.coords = {
             'algo': data.columns,
             'time': data.index,
-            'factor': factors.columns
+            'factor': factors.columns,
+            'gains_factor': gains_factors.columns,
         }
         # The build functions add items when appropriate
         self.dims = {}
@@ -61,6 +67,9 @@ class ModelBuilder(object):
         if factors is not None and any(factors.index != data.index):
             raise ValueError('Factors must have the same index as data.')
 
+        if gains_factors is not None and any(gains_factors.index != data.index):
+            raise ValueError('Gains factors must have the same index as data.')
+
         self.model = pm.Model()
         with self.model:
             in_sample = self._build_in_sample()
@@ -71,10 +80,16 @@ class ModelBuilder(object):
             gains_mu = self._build_gains_mu(in_sample)
             gains_time = self._build_gains_time(Bx_gains)
 
-            mu = (gains_mu + gains_time) * vlt
+            gains = gains_mu + gains_time
+            if len(gains_factors.columns) > 0 and not self._predict:
+                factors = self._build_gains_factors()
+                gains = gains + factors
+
+            mu = gains * vlt
             if len(factors.columns) > 0 and not self._predict:
-                factors_mu = self._build_factors()
+                factors_mu = self._build_returns_factors()
                 mu = mu + factors_mu
+
             self._build_likelihood(mu, vlt, observed=data.values.T)
 
         if self.params:
@@ -212,7 +227,17 @@ class ModelBuilder(object):
             gains_mu = pm.Normal('gains_mu', mu=0.05, sd=0.1)
             gains_raw = pm.Normal('gains_raw', shape=k)
 
-            author_is = pm.Normal('author_is', shape=k)
+            author_is = pm.HalfNormal('author_is', shape=k, sd=0.1)
+            gains = pm.Deterministic('gains', gains_sd * gains_raw + gains_mu)
+            gains_all = gains[None, :] + author_is[None, :] * is_author_is
+        elif shrinkage == 'skew-neg2-normal':
+            gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
+            pm.Deterministic('log_gains_sd', tt.log(gains_sd))
+            gains_mu = pm.Normal('gains_mu', mu=0.02, sd=0.1)
+            gains_raw = pm.SkewNormal(
+                'gains_raw', sd=1, mu=0, alpha=-2, shape=k)
+
+            author_is = pm.Normal('author_is', shape=k, sd=0.3)
             gains = pm.Deterministic('gains', gains_sd * gains_raw + gains_mu)
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'skew-normal':
@@ -305,7 +330,17 @@ class ModelBuilder(object):
             self.dims['vlt'] = ('algo', 'time')
             pm.Deterministic('vlt', sd)
 
-    def _build_factors(self):
+    def _build_gains_factors(self):
+        self.dims.update({
+            'gains_factor_algo': ('gains_factor', 'algo'),
+        })
+        factors = self.factors
+        n_algos, n_factors = self.n_algos, self.n_factors
+        factor_algo = pm.StudentT('gains_factor_algo', nu=3, mu=0, sd=2,
+                                  shape=(n_factors, n_algos))
+        return (factor_algo[:, None, :] * factors.values[None, :, :]).sum(0).T
+
+    def _build_returns_factors(self):
         self.dims.update({
             'factor_algo': ('factor', 'algo'),
         })
@@ -521,7 +556,7 @@ class FitResult:
         return ModelBuilder(data, algos, **params)
 
     def _make_prediction_model(self, n_days):
-        start = pd.Timestamp(self.trace.time[0].values)
+        start = pd.Timestamp(self.trace.time[-1].values)
         index = pd.date_range(start, periods=n_days, freq='B', name='time')
         columns = self.trace.algo
 
@@ -537,7 +572,7 @@ class FitResult:
         coords = [self.trace.chain, self.trace.sample,
                   self.trace.algo, model.coords['time']]
         if n_repl is not None:
-            repl_coord = pd.RangeIndex(n_repl)
+            repl_coord = pd.RangeIndex(n_repl, name='sim_repl')
             coords.append(repl_coord)
         shape = [len(vals) for vals in coords]
 
@@ -583,14 +618,12 @@ class FitResult:
 
 
 class Optimizer(object):
-    def __init__(self, fit, predictions, utility='isoelastic', lmda=None,
+    def __init__(self, predictions, utility='isoelastic', lmda=None,
                  factor_weights=None):
         """Compute a portfolio based on model predictions.
 
         Parameters
         ----------
-        fit : bayesalpha.model.FitResult
-            The model fit to base the portfolio on.
         predictions : xr.DataSet
             Predictions as returned by fit.predict_value
         utility : ['isoelastic', 'exp'], default='isoelastic'
@@ -601,18 +634,17 @@ class Optimizer(object):
         factor_weights : ndarray
             TODO
         """
-        self._fit = fit
         self._returns = predictions
-        self._problem = self._build_problem(lmda, factor_weights)
+        self._problem = self._build_problem(lmda, factor_weights, utility)
 
-    def _build_problem(self, lmda_vals, factor_weights_vals, utility='isoelastic'):
+    def _build_problem(self, lmda_vals, factor_weights_vals, utility):
         n_predict = (len(self._returns.chain)
                      * len(self._returns.sample)
                      * len(self._returns.sim_repl))
         n_algos = len(self._returns.algo)
-        lmda = cvxpy.Parameter(sign='positive', name='lambda')
-        returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
-        weights = cvxpy.Variable(n_algos, name='weights')
+        lmda = cvxpy.Parameter(name='lambda', nonneg=True)
+        returns = cvxpy.Parameter(shape=(n_predict, n_algos), name='returns')
+        weights = cvxpy.Variable(shape=(n_algos,), name='weights')
         portfolio_returns = returns * weights
         if utility == 'exp':
             risk = cvxpy.log_sum_exp(-lmda * portfolio_returns)
@@ -623,7 +655,7 @@ class Optimizer(object):
 
         problem = cvxpy.Problem(
             cvxpy.Minimize(risk),
-            [cvxpy.sum_entries(weights) == 1, weights >= 0])
+            [cvxpy.sum(weights) == 1, weights >= 0, weights <= 1])
 
         if lmda_vals is not None:
             lmda.value = lmda_vals
@@ -647,13 +679,14 @@ class Optimizer(object):
         self._problem.solve(**kwargs)
         if self._problem.status != 'optimal':
             raise ValueError('Optimization did not converge.')
-        weights = self._weights_v.value.A.ravel().copy()
-        algos = self._fit.trace.algo
+        weights = self._weights_v.value.ravel().copy()
+        algos = self._returns.algo
         return xr.DataArray(weights, coords=[algos], name='weights')
 
 
 def fit_population(data, algos=None, sampler_args=None, save_data=True,
-                   seed=None, factors=None, sampler_type='mcmc', **params):
+                   seed=None, factors=None, gains_factors=None,
+                   sampler_type='mcmc', **params):
     """Fit the model to daily returns.
 
     Parameters
@@ -696,7 +729,9 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
         raise ValueError('Can not specify `random_seed`.')
     sampler_args['random_seed'] = seed
 
-    model, coords, dims = build_model(data, algos, factors=factors, **params)
+    model, coords, dims = build_model(data, algos, factors=factors,
+                                      gains_factors=gains_factors,
+                                      **params)
     timestamp = datetime.isoformat(datetime.now())
     with model:
         args = {} if sampler_args is None else sampler_args
