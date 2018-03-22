@@ -142,7 +142,8 @@ class ModelBuilder(object):
             log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
         elif corr_type == 'dense':
             vlt_mu_dist = pm.Lognormal.dist(mu=-3, sd=1, shape=k)
-            chol_cov_packed = pm.LKJCholeskyCov('chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
+            chol_cov_packed = pm.LKJCholeskyCov(
+                'chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
             chol_cov = pm.expand_packed_triangular(k, chol_cov_packed)
             cov = tt.dot(chol_cov, chol_cov.T)
             variance_mu = tt.diag(cov)
@@ -322,10 +323,11 @@ class ModelBuilder(object):
         elif corr_type == 'dense':
             # mu, sd  --`shape`-- (algo, time)
             # mv needs (time, algo)
-            ScaledSdMvNormalNonZero('y', mu=mu.T,
-                                    chol=self.model.named_vars['chol_cov_mu'],
-                                    scale_sd=tt.exp(self.model.named_vars['log_vlt_time'].T),
-                                    observed=observed.T)
+            ScaledSdMvNormalNonZero(
+                'y', mu=mu.T,
+                chol=self.model.named_vars['chol_cov_mu'],
+                scale_sd=tt.exp(self.model.named_vars['log_vlt_time'].T),
+                observed=observed.T)
         else:
             raise NotImplementedError
         if self._predict:
@@ -395,7 +397,7 @@ class ModelBuilder(object):
 
         def predict(point):
             if factor_scale_halflife is not None:
-                factors = point['factor_algo']
+                factor_exposures = point['factor_algo']
 
             for var, draw in resample_vars.items():
                 point[var] = draw()
@@ -414,7 +416,7 @@ class ModelBuilder(object):
             if factor_scale_halflife is not None and len(factor_scales) > 0:
                 factor_rets = np.random.randn(len(factor_scales), len(time))
                 factor_rets = factor_rets * factor_scales[:, None]
-                factor_rets = factor_rets[None, :, :] * factors[:, :, None]
+                factor_rets = factor_rets[None, :, :] * factor_exposures[:, :, None]
                 factor_rets = factor_rets.sum(1)
                 returns[...] += factor_rets
 
