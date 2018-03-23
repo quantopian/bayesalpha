@@ -355,7 +355,7 @@ class ModelBuilder(object):
         n_algos, n_factors = self.n_algos, self.n_factors
         factor_algo = pm.StudentT('factor_algo', nu=3, mu=0, sd=2,
                                   shape=(n_factors, n_algos))
-        return (factor_algo[:, None, :] * factors.values[None, :, :]).sum(0).T
+        return (factor_algo[:, None, :] * factors.values.T[:, :, None]).sum(0).T
 
     def make_predict_function(self, factor_scale_halflife=None):
         if not self._predict:
@@ -416,7 +416,7 @@ class ModelBuilder(object):
             if factor_scale_halflife is not None and len(factor_scales) > 0:
                 factor_rets = np.random.randn(len(factor_scales), len(time))
                 factor_rets = factor_rets * factor_scales[:, None]
-                factor_rets = factor_rets[None, :, :] * factor_exposures[:, :, None]
+                factor_rets = factor_rets[None, :, :] * factor_exposures.T[:, :, None]
                 factor_rets = factor_rets.sum(1)
                 returns[...] += factor_rets
 
