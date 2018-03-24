@@ -63,11 +63,16 @@ class ModelBuilder(object):
         self.n_time = len(data.index)
         self.n_factors = len(factors.columns)
         self.factors = factors
+        self.gains_factors = gains_factors
 
-        if factors is not None and any(factors.index != data.index):
+        if (not self._predict
+                and factors is not None
+                and not factors.index.equals(data.index)):
             raise ValueError('Factors must have the same index as data.')
 
-        if gains_factors is not None and any(gains_factors.index != data.index):
+        if (not self._predict
+                and gains_factors is not None
+                and not gains_factors.index.equals(data.index)):
             raise ValueError('Gains factors must have the same index as data.')
 
         self.model = pm.Model()
@@ -137,7 +142,8 @@ class ModelBuilder(object):
             log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
         elif corr_type == 'dense':
             vlt_mu_dist = pm.Lognormal.dist(mu=-3, sd=1, shape=k)
-            chol_cov_packed = pm.LKJCholeskyCov('chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
+            chol_cov_packed = pm.LKJCholeskyCov(
+                'chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
             chol_cov = pm.expand_packed_triangular(k, chol_cov_packed)
             cov = tt.dot(chol_cov, chol_cov.T)
             variance_mu = tt.diag(cov)
@@ -317,10 +323,11 @@ class ModelBuilder(object):
         elif corr_type == 'dense':
             # mu, sd  --`shape`-- (algo, time)
             # mv needs (time, algo)
-            ScaledSdMvNormalNonZero('y', mu=mu.T,
-                                    chol=self.model.named_vars['chol_cov_mu'],
-                                    scale_sd=tt.exp(self.model.named_vars['log_vlt_time'].T),
-                                    observed=observed.T)
+            ScaledSdMvNormalNonZero(
+                'y', mu=mu.T,
+                chol=self.model.named_vars['chol_cov_mu'],
+                scale_sd=tt.exp(self.model.named_vars['log_vlt_time'].T),
+                observed=observed.T)
         else:
             raise NotImplementedError
         if self._predict:
@@ -348,11 +355,17 @@ class ModelBuilder(object):
         n_algos, n_factors = self.n_algos, self.n_factors
         factor_algo = pm.StudentT('factor_algo', nu=3, mu=0, sd=2,
                                   shape=(n_factors, n_algos))
-        return (factor_algo[:, None, :] * factors.values[None, :, :]).sum(0).T
+        return (factor_algo[:, None, :] * factors.values.T[:, :, None]).sum(0).T
 
-    def make_predict_function(self):
+    def make_predict_function(self, factor_scale_halflife=None):
         if not self._predict:
             raise ValueError('Model was not built for predictions.')
+
+        if factor_scale_halflife is not None:
+            factor_scales = (self.factors
+                .ewm(halflife=factor_scale_halflife)
+                .std()
+                .iloc[-1])
 
         n_gains = len(self.coords['time_raw_gains'])
         n_vlt = len(self.coords['time_raw_vlt'])
@@ -383,6 +396,9 @@ class ModelBuilder(object):
         time = self.coords['time']
 
         def predict(point):
+            if factor_scale_halflife is not None:
+                factor_exposures = point['factor_algo']
+
             for var, draw in resample_vars.items():
                 point[var] = draw()
             point = {var: point[var] for var in input_vars}
@@ -397,15 +413,19 @@ class ModelBuilder(object):
                 returns[...] *= np.exp(log_vlt_time)
                 returns[...] += mu
 
+            if factor_scale_halflife is not None and len(factor_scales) > 0:
+                factor_rets = np.random.randn(len(factor_scales), len(time))
+                factor_rets = factor_rets * factor_scales[:, None]
+                factor_rets = factor_rets[None, :, :] * factor_exposures.T[:, :, None]
+                factor_rets = factor_rets.sum(1)
+                returns[...] += factor_rets
+
             returns = xr.DataArray(returns, coords=[algos, time])
             return returns
 
         return predict
 
 
-def build_model(data, algos, **params):
-    builder = ModelBuilder(data, algos, **params)
-    return builder.model, builder.coords, builder.dims
 
 
 class FitResult:
@@ -545,15 +565,21 @@ class FitResult:
                 data[var] = vals[var].values
             yield data
 
-    def rebuild_model(self, data=None, algos=None, **extra_params):
+    def rebuild_model(self, data=None, algos=None, factors=None,
+                      gains_factors=None, **extra_params):
         """Return a ModelBuilder that recreates the original model."""
         if data is None:
             data = self.trace._data.to_pandas().copy()
         if algos is None:
             algos = self.trace._algos.to_pandas().copy()
+        if factors is None:
+            factors = self.trace._factors.to_pandas().copy()
+        if gains_factors is None:
+            gains_factors = self.trace._gains_factors.to_pandas().copy()
         params = self.params.copy()
         params.update(extra_params)
-        return ModelBuilder(data, algos, **params)
+        return ModelBuilder(data, algos, factors=factors,
+                            gains_factors=gains_factors, **params)
 
     def _make_prediction_model(self, n_days):
         start = pd.Timestamp(self.trace.time[-1].values)
@@ -566,9 +592,9 @@ class FitResult:
         algos['created_at'] = start
         return self.rebuild_model(data, algos, predict=True)
 
-    def predict(self, n_days, n_repl=None):
+    def predict(self, n_days, n_repl=None, factor_scale_halflife=None):
         model = self._make_prediction_model(n_days)
-        predict_func = model.make_predict_function()
+        predict_func = model.make_predict_function(factor_scale_halflife)
         coords = [self.trace.chain, self.trace.sample,
                   self.trace.algo, model.coords['time']]
         if n_repl is not None:
@@ -587,9 +613,9 @@ class FitResult:
                     predictions.loc[chain, sample, :, :, repl] = returns
         return predictions
 
-    def predict_value(self, n_days, n_repl=None):
+    def predict_value(self, n_days, n_repl=None, factor_scale_halflife=None):
         model = self._make_prediction_model(n_days)
-        predict_func = model.make_predict_function()
+        predict_func = model.make_predict_function(factor_scale_halflife)
         coords = [self.trace.chain, self.trace.sample, self.trace.algo]
         if n_repl is not None:
             repl_coord = pd.RangeIndex(n_repl, name='sim_repl')
@@ -642,9 +668,9 @@ class Optimizer(object):
                      * len(self._returns.sample)
                      * len(self._returns.sim_repl))
         n_algos = len(self._returns.algo)
-        lmda = cvxpy.Parameter(name='lambda', nonneg=True)
-        returns = cvxpy.Parameter(shape=(n_predict, n_algos), name='returns')
-        weights = cvxpy.Variable(shape=(n_algos,), name='weights')
+        lmda = cvxpy.Parameter(sign='positive', name='lambda')
+        returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
+        weights = cvxpy.Variable(n_algos, name='weights')
         portfolio_returns = returns * weights
         if utility == 'exp':
             risk = cvxpy.log_sum_exp(-lmda * portfolio_returns)
@@ -655,7 +681,7 @@ class Optimizer(object):
 
         problem = cvxpy.Problem(
             cvxpy.Minimize(risk),
-            [cvxpy.sum(weights) == 1, weights >= 0, weights <= 1])
+            [cvxpy.sum_entries(weights) == 1, weights >= 0, weights <= 1])
 
         if lmda_vals is not None:
             lmda.value = lmda_vals
@@ -679,7 +705,7 @@ class Optimizer(object):
         self._problem.solve(**kwargs)
         if self._problem.status != 'optimal':
             raise ValueError('Optimization did not converge.')
-        weights = self._weights_v.value.ravel().copy()
+        weights = self._weights_v.value.A.ravel().copy()
         algos = self._returns.algo
         return xr.DataArray(weights, coords=[algos], name='weights')
 
@@ -729,9 +755,10 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
         raise ValueError('Can not specify `random_seed`.')
     sampler_args['random_seed'] = seed
 
-    model, coords, dims = build_model(data, algos, factors=factors,
-                                      gains_factors=gains_factors,
-                                      **params)
+    builder = ModelBuilder(data, algos, factors=factors,
+                           gains_factors=gains_factors, **params)
+    model, coords, dims = builder.model, builder.coords, builder.dims
+
     timestamp = datetime.isoformat(datetime.now())
     with model:
         args = {} if sampler_args is None else sampler_args
@@ -756,11 +783,14 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
             trace['_algos'] = (('algo', 'algodata'), algos.loc[data.columns])
         except ValueError:
             warnings.warn('Could not save algo metadata, skipping.')
-        if factors is not None:
-            try:
-                trace['_factors'] = (('time', 'factor'), factors)
-            except ValueError:
-                warnings.warn('Could not save algo metadata, skipping.')
+        try:
+            trace['_factors'] = (('time', 'factor'), builder.factors)
+        except ValueError:
+            warnings.warn('Could not save algo metadata, skipping.')
+        try:
+            trace['_gains_factors'] = (('time', 'gains_factor'), builder.gains_factors)
+        except ValueError:
+            warnings.warn('Could not save algo metadata, skipping.')
     return FitResult(trace)
 
 
