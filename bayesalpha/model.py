@@ -668,9 +668,9 @@ class Optimizer(object):
                      * len(self._returns.sample)
                      * len(self._returns.sim_repl))
         n_algos = len(self._returns.algo)
-        lmda = cvxpy.Parameter(sign='positive', name='lambda')
-        returns = cvxpy.Parameter(rows=n_predict, cols=n_algos, name='returns')
-        weights = cvxpy.Variable(n_algos, name='weights')
+        lmda = cvxpy.Parameter(name='lambda', nonneg=True)
+        returns = cvxpy.Parameter(shape=(n_predict, n_algos), name='returns')
+        weights = cvxpy.Variable(shape=(n_algos,), name='weights')
         portfolio_returns = returns * weights
         if utility == 'exp':
             risk = cvxpy.log_sum_exp(-lmda * portfolio_returns)
@@ -681,7 +681,7 @@ class Optimizer(object):
 
         problem = cvxpy.Problem(
             cvxpy.Minimize(risk),
-            [cvxpy.sum_entries(weights) == 1, weights >= 0, weights <= 1])
+            [cvxpy.sum(weights) == 1, weights >= 0, weights <= 1])
 
         if lmda_vals is not None:
             lmda.value = lmda_vals
@@ -705,7 +705,7 @@ class Optimizer(object):
         self._problem.solve(**kwargs)
         if self._problem.status != 'optimal':
             raise ValueError('Optimization did not converge.')
-        weights = self._weights_v.value.A.ravel().copy()
+        weights = self._weights_v.value.ravel().copy()
         algos = self._returns.algo
         return xr.DataArray(weights, coords=[algos], name='weights')
 
