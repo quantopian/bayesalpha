@@ -14,7 +14,7 @@ requirements = [
     'scipy>=0.19.0',
     'xarray>=0.9',
     'seaborn',
-    'cvxpy>=1.0',
+    'cvxpy<=1.0',
     'empyrical',
 ]
 
