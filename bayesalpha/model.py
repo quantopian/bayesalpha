@@ -13,8 +13,14 @@ import xarray as xr
 from datetime import datetime
 import random
 import pandas as pd
-import cvxpy
 import empyrical
+
+try:
+    import cvxpy
+    if cvxpy.__version__.split('.') < ['1', '0', '0']:
+        cvxpy = None
+except ImportError:
+    cvxpy = None
 
 from bayesalpha.dists import (
     bspline_basis,
@@ -660,6 +666,8 @@ class Optimizer(object):
         factor_weights : ndarray
             TODO
         """
+        if cvxpy is None:
+            raise RuntimeError('Optimization requires cvxpy>=1.0')
         self._returns = predictions
         self._problem = self._build_problem(lmda, factor_weights, utility)
 
