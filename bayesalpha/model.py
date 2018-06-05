@@ -68,6 +68,7 @@ class ModelBuilder(object):
         self.n_algos = len(data.columns)
         self.n_time = len(data.index)
         self.n_factors = len(factors.columns)
+        self.n_gains_factors = len(gains_factors.columns)
         self.factors = factors
         self.gains_factors = gains_factors
 
@@ -93,8 +94,8 @@ class ModelBuilder(object):
 
             gains = gains_mu + gains_time
             if len(gains_factors.columns) > 0 and not self._predict:
-                factors = self._build_gains_factors()
-                gains = gains + factors
+                factors_gains = self._build_gains_factors()
+                gains = gains + factors_gains
 
             mu = gains * vlt
             if len(factors.columns) > 0 and not self._predict:
@@ -346,12 +347,17 @@ class ModelBuilder(object):
     def _build_gains_factors(self):
         self.dims.update({
             'gains_factor_algo': ('gains_factor', 'algo'),
+            'gains_factor_algo_raw': ('gains_factor', 'algo'),
+            'gains_factor_algo_sd': ('gains_factor',),
         })
-        factors = self.factors
-        n_algos, n_factors = self.n_algos, self.n_factors
-        factor_algo = pm.StudentT('gains_factor_algo', nu=3, mu=0, sd=2,
-                                  shape=(n_factors, n_algos))
-        return (factor_algo[:, None, :] * factors.values[None, :, :]).sum(0).T
+        gains_factors = self.gains_factors
+        n_algos, n_gains_factors = self.n_algos, self.n_gains_factors
+        sd = pm.HalfNormal('gains_factor_algo_sd', sd=0.4, shape=n_gains_factors)
+        raw = pm.StudentT('gains_factor_algo_raw', nu=7, mu=0, sd=1,
+                          shape=(n_gains_factors, n_algos))
+        vals = sd[:, None] * raw
+        pm.Deterministic('gains_factor_algo', vals)
+        return (vals[:, None, :] * gains_factors.values.T[:, :, None]).sum(0).T 
 
     def _build_returns_factors(self):
         self.dims.update({
