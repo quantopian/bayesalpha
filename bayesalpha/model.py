@@ -34,7 +34,7 @@ from bayesalpha._version import get_versions
 import bayesalpha.plotting
 
 _PARAM_DEFAULTS = {
-    'shrinkage': 'exponential',
+    'shrinkage': 'skew-neg2-normal',
     'corr_type': 'diag',
 }
 
@@ -146,15 +146,17 @@ class ModelBuilder(object):
         self.corr_type = corr_type = self.params.pop('corr_type')
         k = self.n_algos
         if corr_type == 'diag':
-            log_vlt_mu = pm.Normal('log_vlt_mu', mu=-3, sd=1, shape=k)
+            log_vlt_mu = pm.Normal('log_vlt_mu', mu=-6, sd=0.5, shape=k)
         elif corr_type == 'dense':
-            vlt_mu_dist = pm.Lognormal.dist(mu=-3, sd=1, shape=k)
+            # We scale the choleky matrix by exp(6), to avoid trouble
+            # with initialization.
+            vlt_mu_dist = pm.Lognormal.dist(mu=0, sd=0.5, shape=k)
             chol_cov_packed = pm.LKJCholeskyCov(
                 'chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
-            chol_cov = pm.expand_packed_triangular(k, chol_cov_packed)
+            chol_cov = pm.expand_packed_triangular(k, chol_cov_packed) / np.exp(6)
             cov = tt.dot(chol_cov, chol_cov.T)
             variance_mu = tt.diag(cov)
-            corr = cov / (variance_mu[:, None] * variance_mu[None, :]) ** .5
+            corr = cov / tt.sqrt(variance_mu[:, None] * variance_mu[None, :])
             pm.Deterministic('chol_cov_mu', chol_cov)
             pm.Deterministic('cov_mu', cov)
             pm.Deterministic('corr_mu', corr)
@@ -248,11 +250,11 @@ class ModelBuilder(object):
             pm.Deterministic('log_gains_sd', tt.log(gains_sd))
             gains_mu = pm.Normal('gains_mu', mu=0.02, sd=0.1)
             gains_raw = pm.SkewNormal(
-                'gains_raw', sd=1, mu=0, alpha=-2, shape=k)
+                'gains_raw', sd=1, mu=0, alpha=-4, shape=k)
 
             author_is = pm.Normal('author_is', shape=k, sd=0.3)
             gains = pm.Deterministic('gains', gains_sd * gains_raw + gains_mu)
-            gains_all = gains[None, :] + author_is[None, :] * is_author_is
+            gains_all = (1 - is_author_is) * gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'skew-normal':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
             pm.Deterministic('log_gains_sd', tt.log(gains_sd))
