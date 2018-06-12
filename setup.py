@@ -6,11 +6,10 @@ import versioneer
 DISTNAME = 'bayesalpha'
 AUTHOR = 'Adrian Seyboldt'
 AUTHOR_EMAIL = 'adrian.seyboldt@gmail.com'
-VERSION = '0.1'
 
 requirements = [
     'Bottleneck>=1.1',
-    'pymc3>=3.2',
+    'pymc3>=3.4.1',
     'scipy>=0.19.0',
     'xarray>=0.9',
     'seaborn',
