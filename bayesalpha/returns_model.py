@@ -256,6 +256,7 @@ class ReturnsModelBuilder(object):
 
             author_is = pm.Normal('author_is', shape=k, sd=0.4, mu=0.1)
             gains = pm.Deterministic('gains', gains_sd * gains_raw + gains_mu)
+            #gains_all = (1 - is_author_is) * gains[None, :] + author_is[None, :] * is_author_is
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'skew-normal':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
