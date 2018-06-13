@@ -639,12 +639,12 @@ class FitResult:
         for (chain, sample), point in self._points(include_transformed=False):
             if n_repl is None:
                 returns = predict_func(point).to_pandas().T
-                cum_returns = empyrical.cum_returns_final(returns)
+                cum_returns = returns.apply(empyrical.cum_returns_final)
                 predictions.loc[chain, sample, :] = cum_returns
             else:
                 for repl in repl_coord:
                     returns = predict_func(point).to_pandas().T
-                    cum_returns = empyrical.cum_returns_final(returns)
+                    cum_returns = returns.apply(empyrical.cum_returns_final)
                     predictions.loc[chain, sample, :, repl] = cum_returns
         return predictions
 
