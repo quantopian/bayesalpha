@@ -659,7 +659,7 @@ class FitResult:
 
 class Optimizer(object):
     def __init__(self, predictions, utility='isoelastic', lmda=None,
-                 factor_weights=None):
+                 factor_weights=None, max_weights=None):
         """Compute a portfolio based on model predictions.
 
         Parameters
@@ -678,6 +678,9 @@ class Optimizer(object):
             raise RuntimeError('Optimization requires cvxpy>=1.0')
         self._returns = predictions
         self._problem = self._build_problem(lmda, factor_weights, utility)
+        if max_weights is None:
+            max_weights = [1] * len(predictions.algo)
+        self._max_weights = max_weights
 
     def _build_problem(self, lmda_vals, factor_weights_vals, utility):
         n_predict = (len(self._returns.chain)
@@ -686,6 +689,7 @@ class Optimizer(object):
         n_algos = len(self._returns.algo)
         lmda = cvxpy.Parameter(name='lambda', nonneg=True)
         returns = cvxpy.Parameter(shape=(n_predict, n_algos), name='returns')
+        max_weights = cvxpy.Parameter(shape=(n_algos), name='max_weights')
         weights = cvxpy.Variable(shape=(n_algos,), name='weights')
         portfolio_returns = returns * weights
         if utility == 'exp':
@@ -697,7 +701,7 @@ class Optimizer(object):
 
         problem = cvxpy.Problem(
             cvxpy.Minimize(risk),
-            [cvxpy.sum(weights) == 1, weights >= 0, weights <= 1])
+            [cvxpy.sum(weights) == 1, weights >= 0, weights <= max_weights])
 
         if lmda_vals is not None:
             lmda.value = lmda_vals
@@ -710,14 +714,19 @@ class Optimizer(object):
         self._lmda_p = lmda
         self._factor_weights_p = None
         self._weights_v = weights
+        self._max_weights_v = max_weights
         return problem
 
-    def solve(self, lmda=None, factor_weights=None, **kwargs):
+    def solve(self, lmda=None, factor_weights=None, max_weights=None, **kwargs):
         """Find the optimal weights for the portfolio."""
         if lmda is not None:
             self._lmda_p.value = lmda
         if factor_weights is not None:
             self._factor_weights_p.value = factor_weights
+        if max_weights is not None:
+            self._max_weights_v.value = max_weights
+        else:
+            self._max_weights_v.value = np.array(self._max_weights)
         self._problem.solve(**kwargs)
         if self._problem.status != 'optimal':
             raise ValueError('Optimization did not converge.')
