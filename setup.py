@@ -14,6 +14,7 @@ requirements = [
     'xarray>=0.9',
     'seaborn',
     'empyrical',
+    'netcdf4',
 ]
 
 
