@@ -1,10 +1,15 @@
+import random
+import warnings
+import json
+from datetime import datetime
 import numpy as np
 import pandas as pd
-import random
 import xarray as xr
 from sklearn.preprocessing import LabelEncoder
-import warnings
 import pymc3 as pm
+from serialize import to_xarray
+from bayesalpha._version import get_versions
+import hashlib
 
 
 class ModelBuilder:
@@ -12,7 +17,7 @@ class ModelBuilder:
         self.num_authors = data.meta_user_id.nunique()
         self.num_algos = data.meta_algorithm_id.nunique()
         # num_backtests: nunique(), count() and len(data) should be the same
-        self.num_backtests = data.meta_code_id.nunique()  
+        self.num_backtests = data.meta_code_id.nunique()
 
         # Which algos correspond to which authors?
         df = (data[['meta_user_id', 'meta_algorithm_id']]
@@ -56,7 +61,6 @@ class ModelBuilder:
             'alpha_algo':      ('algo', )
         }
 
-
     def _build_model(self, data):
         with pm.Model() as model:
             mu_global = pm.Normal('mu_global', mu=0, sd=3)
@@ -89,18 +93,23 @@ class ModelBuilder:
                 pm.Deterministic(
                     'sigma_backtest',
                     np.sqrt(
-                        np.square(sigma_author[self.author_to_backtest_encoding])
-                        + np.square(sigma_algo[self.algo_to_backtest_encoding])
+                        np.square(
+                            sigma_author[self.author_to_backtest_encoding]
+                        )
+                        + np.square(
+                            sigma_algo[self.algo_to_backtest_encoding]
+                        )
                     )
                 )
 
             alpha_author = pm.Deterministic('alpha_author',
                                             mu_global + mu_author)
 
-            alpha_algo = pm.Deterministic('alpha_algo',
-                                          mu_global
-                                          + mu_author[self.author_to_algo_encoding]
-                                          + mu_algo)
+            alpha_algo = \
+                pm.Deterministic('alpha_algo',
+                                 mu_global
+                                 + mu_author[self.author_to_algo_encoding]
+                                 + mu_algo)
 
             sharpe = pm.Normal('sharpe',
                                mu=mu_backtest,
@@ -119,9 +128,64 @@ class FitResult:
         """Save the results to a netcdf file."""
         self._trace.to_netcdf(filename, group=group, **args)
 
+    @classmethod
+    def _load(cls, filename, group=None):
+        trace = xr.open_dataset(filename, group=group)
+        return cls(trace=trace)
 
-def fit_authors(data, sampler_type='mcmc', sampler_args=None, seed=None,
-        save_data=True):
+    @property
+    def trace(self):
+        return self._trace
+
+    @property
+    def params(self):
+        return json.loads(self._trace.attrs['params'])
+
+    @property
+    def timestamp(self):
+        return self._trace.attrs['timestamp']
+
+    @property
+    def model_version(self):
+        return self._trace.attrs['model-version']
+
+    @property
+    def params_hash(self):
+        params = json.dumps(self.params, sort_keys=True)
+        hasher = hashlib.sha256(params.encode())
+        return hasher.hexdigest()[:16]
+
+    @property
+    def ok(self):
+        return len(self.warnings) == 0
+
+    @property
+    def warnings(self):
+        return json.loads(self._trace.attrs['warnings'])
+
+    @property
+    def seed(self):
+        return self._trace.attrs['seed']
+
+    @property
+    def id(self):
+        hasher = hashlib.sha256()
+        hasher.update(self.params_hash.encode())
+        hasher.update(self.model_version.encode())
+        hasher.update(str(self.seed).encode())
+        return hasher.hexdigest()[:16]
+
+    def raise_ok(self):
+        if not self.ok:
+            warnings = self.warnings
+            raise RuntimeError('Problems during sampling: %s' % warnings)
+
+
+def fit_authors(data,
+                sampler_type='mcmc',
+                sampler_args=None,
+                seed=None,
+                save_data=True):
     """
     Fit author model to population of authors, with algos and backtests.
 
@@ -132,17 +196,20 @@ def fit_authors(data, sampler_type='mcmc', sampler_args=None, seed=None,
         and code ID. Long format.
         Note that currently, backtests are deduplicated based on code id.
     ::
-             meta_user_id    meta_algorithm_id    meta_code_id    perf_sharpe_ratio_is
-        0    abcdef123456    ghijkl789123         abcdef000000    0.919407 
-        1    abcdef123456    ghijkl789123         abcdef000001    1.129353 
-        2    abcdef123456    ghijkl789123         abcdef000002   -0.005934
+        meta_user_id   meta_algorithm_id   meta_code_id   perf_sharpe_ratio_is
+    0   abcdef123456   ghijkl789123        abcdef000000   0.919407 
+    1   abcdef123456   ghijkl789123        abcdef000001   1.129353 
+    2   abcdef123456   ghijkl789123        abcdef000002   -0.005934
+
     sampler_type : str
-        Either 'mcmc' or 'vi'
+        Whether to use Markov chain Monte Carlo or variational inference.
+        Either 'mcmc' or 'vi'. Defaults to 'mcmc'.
     save_data : bool
         Whether to store the dataset in the result object.
     seed : int
         Seed for random number generation in PyMC3.
     """
+
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
 
@@ -154,13 +221,28 @@ def fit_authors(data, sampler_type='mcmc', sampler_args=None, seed=None,
     builder = ModelBuilder(data)
     model, coords, dims = builder.model, builder.coords, builder.dims
 
+    timestamp = datetime.isoformat(datetime.now())
+
     with model:
         args = {} if sampler_args is None else sampler_args
+
         with warnings.catch_warnings(record=True) as warns:
             if sampler_type == 'mcmc':
                 trace = pm.sample(**args)
             else:
                 trace = pm.fit(**args).sample(args.get('draws', 500))
+
+    if warns:
+        warnings.warn('Problems during sampling. Inspect `result.warnings`.')
+
+    trace = to_xarray(trace, coords, dims)
+    trace.attrs['params'] = json.dumps(params)
+    trace.attrs['timestamp'] = timestamp
+    trace.attrs['warnings'] = json.dumps([str(warn) for warn in warns])
+    trace.attrs['seed'] = seed
+    trace.attrs['model-version'] = get_versions()['version']
+
+    return FitResult(trace)
 
 
 def _check_data(data):
@@ -170,10 +252,10 @@ def _check_data(data):
     if (data.perf_sharpe_ratio_is > 5) | (data.perf_sharpe_ratio_is < -5):
         warnings.warn('Data set contains unrealistic Sharpes.')
 
-    if ((data.groupby('meta_algorithm_id') 
-             ['perf_sharpe_ratio_is']
-             .count() < 5).any()):
-        warnings.warn('Data set contains algorithms with fewer than 5 backtests.')
+    if (data.groupby('meta_algorithm_id')['perf_sharpe_ratio_is']
+            .count() < 5).any():
+        warnings.warn('Data set contains algorithms with fewer than 5 '
+                      'backtests.')
 
     if (data.groupby('meta_user_id')['meta_algorithm_id'].nunique() < 5).any():
         warnings.warn('Data set contains users with fewer than 5 algorithms.')
