@@ -16,7 +16,7 @@ class BayesAlphaResult:
         self._trace.to_netcdf(filename, group=group, **args)
 
     @classmethod
-    def _load(cls, filename, group=None):
+    def load(cls, filename, group=None):
         trace = xr.open_dataset(filename, group=group)
         return cls(trace=trace)
 

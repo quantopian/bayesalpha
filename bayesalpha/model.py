@@ -864,11 +864,6 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
     return fit
 
 
-def load(filename, group):
-    """Load results from an netcdf file."""
-    return FitResult._load(filename, group)
-
-
 def _check_data(data):
     if data.count().min() < 100:
         warnings.warn('The dataset contains algos with fewer than 100 '
