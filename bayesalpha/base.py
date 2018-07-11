@@ -1,9 +1,13 @@
+""" Base classes shared across all models. """
+
 import json
 import hashlib
 import xarray as xr
 
 
-class BaseFitResult:
+class BayesAlphaResult:
+    """ A wrapper around a PyMC3 trace as a xarray Dataset. """
+
     def __init__(self, trace):
         self._trace = trace
 
