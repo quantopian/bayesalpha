@@ -164,15 +164,19 @@ def fit_authors(data, sampler_type='mcmc', sampler_args=None, seed=None,
 
 
 def _check_data(data):
-    # TODO check for sufficient data: more than 5 algos per author, more than 5
-    # backtests per algo.
-
     if data.meta_code_id.nunique() != data.shape[0]:
         warnings.warn('Data set contains duplicate backtests.')
 
     if (data.perf_sharpe_ratio_is > 5) | (data.perf_sharpe_ratio_is < -5):
-        warnings.warn('Data set contains unrealistic Sharpes. Proceeding '
-                      'anyways.')
+        warnings.warn('Data set contains unrealistic Sharpes.')
+
+    if ((data.groupby('meta_algorithm_id') 
+             ['perf_sharpe_ratio_is']
+             .count() < 5).any()):
+        warnings.warn('Data set contains algorithms with fewer than 5 backtests.')
+
+    if (data.groupby('meta_user_id')['meta_algorithm_id'].nunique() < 5).any():
+        warnings.warn('Data set contains users with fewer than 5 algorithms.')
 
     if pd.isnull(data).any().any():
         raise ValueError('Data set contains NaNs.')
