@@ -2,6 +2,8 @@ import random
 import warnings
 import json
 from datetime import datetime
+import hashlib
+
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -9,10 +11,9 @@ from sklearn.preprocessing import LabelEncoder
 import pymc3 as pm
 from serialize import to_xarray
 from bayesalpha._version import get_versions
-import hashlib
 
 
-class ModelBuilder:
+class AuthorModelBuilder:
     def __init__(self, data):
         self.num_authors = data.meta_user_id.nunique()
         self.num_algos = data.meta_algorithm_id.nunique()
@@ -185,7 +186,8 @@ def fit_authors(data,
                 sampler_type='mcmc',
                 sampler_args=None,
                 seed=None,
-                save_data=True):
+                save_data=True,
+                **params):
     """
     Fit author model to population of authors, with algos and backtests.
 
@@ -209,6 +211,7 @@ def fit_authors(data,
     seed : int
         Seed for random number generation in PyMC3.
     """
+    params = params.copy()
 
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
@@ -218,7 +221,7 @@ def fit_authors(data,
     else:
         seed = int(seed)
 
-    builder = ModelBuilder(data)
+    builder = AuthorModelBuilder(data)
     model, coords, dims = builder.model, builder.coords, builder.dims
 
     timestamp = datetime.isoformat(datetime.now())
