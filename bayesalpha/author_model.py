@@ -1,3 +1,5 @@
+""" Models the distribution of in-sample Sharpe ratios realized by authors. """
+
 import random
 import warnings
 import json
@@ -17,7 +19,7 @@ class AuthorModelBuilder:
     def __init__(self, data):
         self.num_authors = data.meta_user_id.nunique()
         self.num_algos = data.meta_algorithm_id.nunique()
-        # num_backtests: nunique(), count() and len(data) should be the same
+        # For num_backtests, nunique(), count() and len(data) should be the same
         self.num_backtests = data.meta_code_id.nunique()
 
         # Which algos correspond to which authors?
