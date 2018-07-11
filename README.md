@@ -1,4 +1,4 @@
-![bayesalpha](bayesalpha.gif)
+![bayesalpha](docs/bayesalpha.gif)
 
 # BayesAlpha
 
