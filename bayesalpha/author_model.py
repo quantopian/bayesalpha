@@ -16,7 +16,7 @@ from bayesalpha._version import get_versions
 from .base import BayesAlphaResult
 
 
-class AuthorModelBuilder:
+class AuthorModelBuilder(object):
     """ Class to build the author model.  """
 
     def __init__(self, data):

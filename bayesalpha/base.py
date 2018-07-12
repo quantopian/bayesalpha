@@ -5,7 +5,7 @@ import hashlib
 import xarray as xr
 
 
-class BayesAlphaResult:
+class BayesAlphaResult(object):
     """ A wrapper around a PyMC3 trace as a xarray Dataset. """
 
     def __init__(self, trace):
