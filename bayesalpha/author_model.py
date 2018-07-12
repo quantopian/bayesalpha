@@ -251,11 +251,10 @@ def fit_authors(data,
 
 
 def _check_data(data):
+    # FIXME deduplicating based on code id is not perfect. Ideally we would
+    # deduplicate on backtest id.
     if data.meta_code_id.nunique() != data.shape[0]:
         warnings.warn('Data set contains duplicate backtests.')
-
-    if (data.perf_sharpe_ratio_is > 5) | (data.perf_sharpe_ratio_is < -5):
-        warnings.warn('Data set contains unrealistic Sharpes.')
 
     if (data.groupby('meta_algorithm_id')['perf_sharpe_ratio_is']
             .count() < 5).any():
@@ -264,6 +263,10 @@ def _check_data(data):
 
     if (data.groupby('meta_user_id')['meta_algorithm_id'].nunique() < 5).any():
         warnings.warn('Data set contains users with fewer than 5 algorithms.')
+
+    if (data.perf_sharpe_ratio_is > 20) | (data.perf_sharpe_ratio_is < -20):
+        raise ValueError('Data set contains unrealistic Sharpes: greater than '
+                         '20 in magnitude.')
 
     if pd.isnull(data).any().any():
         raise ValueError('Data set contains NaNs.')
