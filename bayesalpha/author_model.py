@@ -20,6 +20,18 @@ class AuthorModelBuilder(object):
     """ Class to build the author model.  """
 
     def __init__(self, data):
+        """
+        Initialize AuthorModelBuilder object.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Long-format DataFrame of in-sample Sharpe ratios (from user-run
+            backtests), indexed by user, algorithm and code ID.
+            Note that currently, backtests are deduplicated based on code id.
+
+            See fit_author_model for more information.
+        """
         self.num_authors = data.meta_user_id.nunique()
         self.num_algos = data.meta_algorithm_id.nunique()
         # For num_backtests, nunique(), count() and len(data) should be the same
