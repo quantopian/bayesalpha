@@ -16,6 +16,8 @@ from bayesalpha._version import get_versions
 
 
 class AuthorModelBuilder:
+    """ Class to build the author model.  """
+
     def __init__(self, data):
         self.num_authors = data.meta_user_id.nunique()
         self.num_algos = data.meta_algorithm_id.nunique()
@@ -65,6 +67,19 @@ class AuthorModelBuilder:
         }
 
     def _build_model(self, data):
+        """
+        Build the entire author model (in one function). The model is
+        sufficiently simple to specify entirely in one function.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Long-format DataFrame of in-sample Sharpe ratios (from user-run
+            backtests), indexed by user, algorithm and code ID.
+            Note that currently, backtests are deduplicated based on code id.
+
+            See fit_authors for more information.
+        """
         with pm.Model() as model:
             mu_global = pm.Normal('mu_global', mu=0, sd=3)
 
@@ -196,8 +211,8 @@ def fit_authors(data,
     Parameters
     ----------
     data : pd.DataFrame
-        In-sample Sharpe ratios of backtests, indexed by user, algorithm
-        and code ID. Long format.
+        Long-format DataFrame of in-sample Sharpe ratios (from user-run
+        backtests), indexed by user, algorithm and code ID.
         Note that currently, backtests are deduplicated based on code id.
     ::
         meta_user_id   meta_algorithm_id   meta_code_id   perf_sharpe_ratio_is
@@ -251,6 +266,19 @@ def fit_authors(data,
 
 
 def _check_data(data):
+    """
+    Run basic sanity checks on the data set.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Long-format DataFrame of in-sample Sharpe ratios (from user-run
+        backtests), indexed by user, algorithm and code ID.
+        Note that currently, backtests are deduplicated based on code id.
+
+        See fit_authors for more information.
+    """
+
     if data.meta_code_id.nunique() != data.shape[0]:
         warnings.warn('Data set contains duplicate backtests.')
 
@@ -268,6 +296,6 @@ def _check_data(data):
     if pd.isnull(data).any().any():
         raise ValueError('Data set contains NaNs.')
 
-    # FIXME remove this check once feature factory is debugged.
+    # FIXME remove this check once all feature factory features are debugged.
     if (data == -99999).any().any():
         raise ValueError('Data set contains -99999s.')
