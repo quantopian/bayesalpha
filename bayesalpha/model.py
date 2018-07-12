@@ -15,7 +15,7 @@ import random
 import pandas as pd
 import empyrical
 
-from base import BayesAlphaResult
+from .base import BayesAlphaResult
 
 try:
     import cvxpy
