@@ -16,6 +16,8 @@ from bayesalpha._version import get_versions
 
 
 class AuthorModelBuilder:
+    """ Class to build the author model.  """
+
     def __init__(self, data):
         self.num_authors = data.meta_user_id.nunique()
         self.num_algos = data.meta_algorithm_id.nunique()
