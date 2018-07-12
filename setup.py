@@ -12,6 +12,7 @@ requirements = [
     'pymc3>=3.4.1',
     'scipy>=0.19.0',
     'xarray>=0.9',
+    'sklearn',
     'seaborn',
     'empyrical',
     'netcdf4',
