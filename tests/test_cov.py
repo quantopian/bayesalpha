@@ -63,6 +63,14 @@ def algo_meta(date_range, T):
     )
 
 
+@pytest.fixture
+def data():
+    __location__ = os.path.realpath(os.path.join(os.getcwd(),
+                                    os.path.dirname(__file__)))
+    return pd.read_csv(__location__ + '/test_data/author_model_test_data.csv',
+                       index_col=0)
+
+
 def test_fit_population(observations, algo_meta, Sigma_type):
     trace = bayesalpha.fit_population(
         observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
@@ -77,6 +85,16 @@ def test_fit_population_vi(observations, algo_meta, Sigma_type):
         corr_type=Sigma_type
     )
 
+
+def test_fit_author_model(data):
+    trace = bayesalpha.fit_authors(data,
+                                   sampler_type='mcmc',
+                                   sampler_args={
+                                       'draws': 10,
+                                       'tune': 0,
+                                       'chains': 1
+                                       }
+                                   )
 
 def test_scaled_mv_normal_logp_case1():
     cov = np.array([[0.246, 0.048], [0.048, 0.93]], 'float32')
@@ -227,3 +245,4 @@ def test_equicorr_mv_normal_logp_case4():
     logp2 = model2.logp({})
     np.testing.assert_allclose(logp1, logp2)
     eq.distribution.random()
+
