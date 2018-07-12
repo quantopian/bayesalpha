@@ -1,3 +1,5 @@
+""" Models the distribution of in-sample Sharpe ratios realized by authors. """
+
 import random
 import warnings
 import json
@@ -11,13 +13,28 @@ from sklearn.preprocessing import LabelEncoder
 import pymc3 as pm
 from bayesalpha.serialize import to_xarray
 from bayesalpha._version import get_versions
+from .base import BayesAlphaResult
 
 
-class AuthorModelBuilder:
+class AuthorModelBuilder(object):
+    """ Class to build the author model.  """
+
     def __init__(self, data):
+        """
+        Initialize AuthorModelBuilder object.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Long-format DataFrame of in-sample Sharpe ratios (from user-run
+            backtests), indexed by user, algorithm and code ID.
+            Note that currently, backtests are deduplicated based on code id.
+
+            See fit_authors for more information.
+        """
         self.num_authors = data.meta_user_id.nunique()
         self.num_algos = data.meta_algorithm_id.nunique()
-        # num_backtests: nunique(), count() and len(data) should be the same
+        # For num_backtests, nunique(), count() and len(data) should be the same
         self.num_backtests = data.meta_code_id.nunique()
 
         # Which algos correspond to which authors?
@@ -63,6 +80,19 @@ class AuthorModelBuilder:
         }
 
     def _build_model(self, data):
+        """
+        Build the entire author model (in one function). The model is
+        sufficiently simple to specify entirely in one function.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Long-format DataFrame of in-sample Sharpe ratios (from user-run
+            backtests), indexed by user, algorithm and code ID.
+            Note that currently, backtests are deduplicated based on code id.
+
+            See fit_authors for more information.
+        """
         with pm.Model() as model:
             mu_global = pm.Normal('mu_global', mu=0, sd=3)
 
@@ -121,65 +151,13 @@ class AuthorModelBuilder:
         return model
 
 
-class FitResult:
-    def __init__(self, trace):
-        self._trace = trace
+class AuthorModelResult(BayesAlphaResult):
+    def rebuild_model(self, data=None):
+        """ Return an AuthorModelBuilder that recreates the original model. """
+        if data is None:
+            data = self.trace._data.to_pandas().copy()
 
-    def save(self, filename, group=None, **args):
-        """Save the results to a netcdf file."""
-        self._trace.to_netcdf(filename, group=group, **args)
-
-    @classmethod
-    def _load(cls, filename, group=None):
-        trace = xr.open_dataset(filename, group=group)
-        return cls(trace=trace)
-
-    @property
-    def trace(self):
-        return self._trace
-
-    @property
-    def params(self):
-        return json.loads(self._trace.attrs['params'])
-
-    @property
-    def timestamp(self):
-        return self._trace.attrs['timestamp']
-
-    @property
-    def model_version(self):
-        return self._trace.attrs['model-version']
-
-    @property
-    def params_hash(self):
-        params = json.dumps(self.params, sort_keys=True)
-        hasher = hashlib.sha256(params.encode())
-        return hasher.hexdigest()[:16]
-
-    @property
-    def ok(self):
-        return len(self.warnings) == 0
-
-    @property
-    def warnings(self):
-        return json.loads(self._trace.attrs['warnings'])
-
-    @property
-    def seed(self):
-        return self._trace.attrs['seed']
-
-    @property
-    def id(self):
-        hasher = hashlib.sha256()
-        hasher.update(self.params_hash.encode())
-        hasher.update(self.model_version.encode())
-        hasher.update(str(self.seed).encode())
-        return hasher.hexdigest()[:16]
-
-    def raise_ok(self):
-        if not self.ok:
-            warnings = self.warnings
-            raise RuntimeError('Problems during sampling: %s' % warnings)
+        return AuthorModelBuilder(data)
 
 
 def fit_authors(data,
@@ -194,8 +172,8 @@ def fit_authors(data,
     Parameters
     ----------
     data : pd.DataFrame
-        In-sample Sharpe ratios of backtests, indexed by user, algorithm
-        and code ID. Long format.
+        Long-format DataFrame of in-sample Sharpe ratios (from user-run
+        backtests), indexed by user, algorithm and code ID.
         Note that currently, backtests are deduplicated based on code id.
     ::
         meta_user_id   meta_algorithm_id   meta_code_id   perf_sharpe_ratio_is
@@ -211,7 +189,8 @@ def fit_authors(data,
     seed : int
         Seed for random number generation in PyMC3.
     """
-    params = params.copy()
+    if params:
+        raise ValueError('Unnecessary kwargs passed to fit_authors.')
 
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
@@ -245,15 +224,27 @@ def fit_authors(data,
     trace.attrs['seed'] = seed
     trace.attrs['model-version'] = get_versions()['version']
 
-    return FitResult(trace)
+    return AuthorModelResult(trace)
 
 
 def _check_data(data):
+    """
+    Run basic sanity checks on the data set.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Long-format DataFrame of in-sample Sharpe ratios (from user-run
+        backtests), indexed by user, algorithm and code ID.
+        Note that currently, backtests are deduplicated based on code id.
+
+        See fit_authors for more information.
+    """
+
+    # FIXME deduplicating based on code id is not perfect. Ideally we would
+    # deduplicate on backtest id.
     if data.meta_code_id.nunique() != data.shape[0]:
         warnings.warn('Data set contains duplicate backtests.')
-
-    if (data.perf_sharpe_ratio_is > 5) | (data.perf_sharpe_ratio_is < -5):
-        warnings.warn('Data set contains unrealistic Sharpes.')
 
     if (data.groupby('meta_algorithm_id')['perf_sharpe_ratio_is']
             .count() < 5).any():
@@ -263,9 +254,14 @@ def _check_data(data):
     if (data.groupby('meta_user_id')['meta_algorithm_id'].nunique() < 5).any():
         warnings.warn('Data set contains users with fewer than 5 algorithms.')
 
+    if ((data.perf_sharpe_ratio_is > 20)
+            | (data.perf_sharpe_ratio_is < -20)).any():
+        raise ValueError('Data set contains unrealistic Sharpes: greater than '
+                         '20 in magnitude.')
+
     if pd.isnull(data).any().any():
         raise ValueError('Data set contains NaNs.')
 
-    # FIXME remove this check once feature factory is debugged.
+    # FIXME remove this check once all feature factory features are debugged.
     if (data == -99999).any().any():
         raise ValueError('Data set contains -99999s.')
