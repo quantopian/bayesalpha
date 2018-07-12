@@ -79,7 +79,7 @@ class AuthorModelBuilder(object):
             backtests), indexed by user, algorithm and code ID.
             Note that currently, backtests are deduplicated based on code id.
 
-            See fit_authors for more information.
+            See fit_author_model for more information.
         """
         with pm.Model() as model:
             mu_global = pm.Normal('mu_global', mu=0, sd=3)
@@ -148,12 +148,12 @@ class AuthorModelResult(BayesAlphaResult):
         return AuthorModelBuilder(data)
 
 
-def fit_authors(data,
-                sampler_type='mcmc',
-                sampler_args=None,
-                seed=None,
-                save_data=True,
-                **params):
+def fit_author_model(data,
+                     sampler_type='mcmc',
+                     sampler_args=None,
+                     seed=None,
+                     save_data=True,
+                     **params):
     """
     Fit author model to population of authors, with algos and backtests.
 
@@ -178,7 +178,7 @@ def fit_authors(data,
         Seed for random number generation in PyMC3.
     """
     if params:
-        raise ValueError('Unnecessary kwargs passed to fit_authors.')
+        raise ValueError('Unnecessary kwargs passed to fit_author_model.')
 
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
@@ -226,7 +226,7 @@ def _check_data(data):
         backtests), indexed by user, algorithm and code ID.
         Note that currently, backtests are deduplicated based on code id.
 
-        See fit_authors for more information.
+        See fit_author_model for more information.
     """
 
     # FIXME deduplicating based on code id is not perfect. Ideally we would
