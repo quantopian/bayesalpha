@@ -140,8 +140,12 @@ class AuthorModelBuilder:
 
 
 class AuthorModelResult(BayesAlphaResult):
-    # TODO: are there any author model specific functions that we need?
-    pass
+    def rebuild_model(self, data=None):
+        """ Return an AuthorModelBuilder that recreates the original model. """
+        if data is None:
+            data = self.trace._data.to_pandas().copy()
+
+        return AuthorModelBuilder(data)
 
 
 def fit_authors(data,
