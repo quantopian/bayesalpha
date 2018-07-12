@@ -238,7 +238,8 @@ def _check_data(data):
     if (data.groupby('meta_user_id')['meta_algorithm_id'].nunique() < 5).any():
         warnings.warn('Data set contains users with fewer than 5 algorithms.')
 
-    if (data.perf_sharpe_ratio_is > 20) | (data.perf_sharpe_ratio_is < -20):
+    if ((data.perf_sharpe_ratio_is > 20)
+            | (data.perf_sharpe_ratio_is < -20)).any():
         raise ValueError('Data set contains unrealistic Sharpes: greater than '
                          '20 in magnitude.')
 
