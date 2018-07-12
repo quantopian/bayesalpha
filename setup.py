@@ -15,6 +15,8 @@ requirements = [
     'seaborn',
     'empyrical',
     'netcdf4',
+    'pytest-cov',
+    'pytest-timeout',
 ]
 
 
