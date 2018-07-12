@@ -173,7 +173,8 @@ def fit_authors(data,
     seed : int
         Seed for random number generation in PyMC3.
     """
-    params = params.copy()
+    if params:
+        raise ValueError('Unnecessary kwargs passed to fit_authors.')
 
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
