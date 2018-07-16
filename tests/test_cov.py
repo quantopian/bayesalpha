@@ -66,10 +66,11 @@ def algo_meta(date_range, T):
 
 @pytest.fixture
 def data():
-    __location__ = os.path.realpath(os.path.join(os.getcwd(),
-                                    os.path.dirname(__file__)))
-    return pd.read_csv(__location__ + '/test_data/author_model_test_data.csv',
-                       index_col=0)
+    location = os.path.realpath(os.path.dirname(__file__))
+    return pd.read_csv(
+        os.path.join(location, 'test_data/author_model_test_data.csv'),
+        index_col=0
+        )
 
 
 def test_fit_population(observations, algo_meta, Sigma_type):
