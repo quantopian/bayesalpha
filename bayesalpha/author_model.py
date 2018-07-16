@@ -218,6 +218,7 @@ def fit_authors(data,
         warnings.warn('Problems during sampling. Inspect `result.warnings`.')
 
     trace = to_xarray(trace, coords, dims)
+    # Author model takes no parameters, so this will always be empty.
     trace.attrs['params'] = json.dumps(params)
     trace.attrs['timestamp'] = timestamp
     trace.attrs['warnings'] = json.dumps([str(warn) for warn in warns])
