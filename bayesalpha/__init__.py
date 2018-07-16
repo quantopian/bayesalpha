@@ -1,4 +1,4 @@
-from .model import fit_single, fit_population, load
+from .model import fit_single, fit_population
 from .author_model import fit_authors
 
 from ._version import get_versions
