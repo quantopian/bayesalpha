@@ -43,7 +43,7 @@ _PARAM_DEFAULTS = {
 RETURNS_MODEL_TYPE = 'returns-model'
 
 
-class ModelBuilder(object):
+class ReturnsModelBuilder(object):
     def __init__(self, data, algos, factors=None, predict=False,
                  gains_factors=None, **params):
         data = data.fillna(0.)
@@ -524,7 +524,7 @@ class ReturnsModelResult(BayesAlphaResult):
 
     def rebuild_model(self, data=None, algos=None, factors=None,
                       gains_factors=None, **extra_params):
-        """Return a ModelBuilder that recreates the original model."""
+        """Return a ReturnsModelBuilder that recreates the original model."""
         if data is None:
             data = self.trace._data.to_pandas().copy()
         if algos is None:
@@ -535,8 +535,8 @@ class ReturnsModelResult(BayesAlphaResult):
             gains_factors = self.trace._gains_factors.to_pandas().copy()
         params = self.params.copy()
         params.update(extra_params)
-        return ModelBuilder(data, algos, factors=factors,
-                            gains_factors=gains_factors, **params)
+        return ReturnsModelBuilder(data, algos, factors=factors,
+                                   gains_factors=gains_factors, **params)
 
     def _make_prediction_model(self, n_days):
         start = pd.Timestamp(self.trace.time[-1].values)
@@ -723,8 +723,8 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
         raise ValueError('Can not specify `random_seed`.')
     sampler_args['random_seed'] = seed
 
-    builder = ModelBuilder(data, algos, factors=factors,
-                           gains_factors=gains_factors, **params)
+    builder = ReturnsModelBuilder(data, algos, factors=factors,
+                                  gains_factors=gains_factors, **params)
     model, coords, dims = builder.model, builder.coords, builder.dims
 
     timestamp = datetime.isoformat(datetime.now())
