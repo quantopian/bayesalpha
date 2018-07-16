@@ -757,7 +757,7 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
             trace['_gains_factors'] = (('time', 'gains_factor'), builder.gains_factors)
         except ValueError:
             warnings.warn('Could not save algo metadata, skipping.')
-    return BayesAlphaResult(trace)
+    return ReturnsModelResult(trace)
 
 
 _TRACE_PARAM_NAMES = {
