@@ -166,3 +166,4 @@ pip-selfcheck.json
 
 
 .DS_Store
+.pytest_cache

@@ -2,10 +2,11 @@
 
 import json
 import hashlib
+from abc import ABC, abstractmethod
 import xarray as xr
 
 
-class BayesAlphaResult(object):
+class BayesAlphaResult(ABC):
     """ A wrapper around a PyMC3 trace as a xarray Dataset. """
 
     def __init__(self, trace):
@@ -16,9 +17,12 @@ class BayesAlphaResult(object):
         self._trace.to_netcdf(filename, group=group, **args)
 
     @classmethod
-    def load(cls, filename, group=None):
-        trace = xr.open_dataset(filename, group=group)
+    def _load(cls, trace):
         return cls(trace=trace)
+
+    @abstractmethod
+    def rebuild_model(self, **kwargs):
+        pass
 
     @property
     def trace(self):
@@ -35,6 +39,10 @@ class BayesAlphaResult(object):
     @property
     def model_version(self):
         return self._trace.attrs['model-version']
+
+    @property
+    def model_type(self):
+        return self._trace.attrs['model-type']
 
     @property
     def params_hash(self):
@@ -66,3 +74,4 @@ class BayesAlphaResult(object):
         if not self.ok:
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
+

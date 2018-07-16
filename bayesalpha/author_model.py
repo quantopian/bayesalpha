@@ -11,9 +11,11 @@ import pandas as pd
 import xarray as xr
 from sklearn.preprocessing import LabelEncoder
 import pymc3 as pm
-from serialize import to_xarray
-from bayesalpha._version import get_versions
+from .serialize import to_xarray
+from ._version import get_versions
 from .base import BayesAlphaResult
+
+AUTHOR_MODEL_TYPE = 'author-model'
 
 
 class AuthorModelBuilder(object):
@@ -218,11 +220,13 @@ def fit_authors(data,
         warnings.warn('Problems during sampling. Inspect `result.warnings`.')
 
     trace = to_xarray(trace, coords, dims)
+    # Author model takes no parameters, so this will always be empty.
     trace.attrs['params'] = json.dumps(params)
     trace.attrs['timestamp'] = timestamp
     trace.attrs['warnings'] = json.dumps([str(warn) for warn in warns])
     trace.attrs['seed'] = seed
     trace.attrs['model-version'] = get_versions()['version']
+    trace.attrs['model-type'] = AUTHOR_MODEL_TYPE
 
     return AuthorModelResult(trace)
 

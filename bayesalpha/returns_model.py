@@ -40,8 +40,10 @@ _PARAM_DEFAULTS = {
     'corr_type': 'diag',
 }
 
+RETURNS_MODEL_TYPE = 'returns-model'
 
-class ModelBuilder(object):
+
+class ReturnsModelBuilder(object):
     def __init__(self, data, algos, factors=None, predict=False,
                  gains_factors=None, **params):
         data = data.fillna(0.)
@@ -522,7 +524,7 @@ class ReturnsModelResult(BayesAlphaResult):
 
     def rebuild_model(self, data=None, algos=None, factors=None,
                       gains_factors=None, **extra_params):
-        """Return a ModelBuilder that recreates the original model."""
+        """Return a ReturnsModelBuilder that recreates the original model."""
         if data is None:
             data = self.trace._data.to_pandas().copy()
         if algos is None:
@@ -533,8 +535,8 @@ class ReturnsModelResult(BayesAlphaResult):
             gains_factors = self.trace._gains_factors.to_pandas().copy()
         params = self.params.copy()
         params.update(extra_params)
-        return ModelBuilder(data, algos, factors=factors,
-                            gains_factors=gains_factors, **params)
+        return ReturnsModelBuilder(data, algos, factors=factors,
+                                   gains_factors=gains_factors, **params)
 
     def _make_prediction_model(self, n_days):
         start = pd.Timestamp(self.trace.time[-1].values)
@@ -676,7 +678,7 @@ class Optimizer(object):
         return xr.DataArray(weights, coords=[algos], name='weights')
 
 
-def fit_population(data, algos=None, sampler_args=None, save_data=True,
+def fit_returns_population(data, algos=None, sampler_args=None, save_data=True,
                    seed=None, factors=None, gains_factors=None,
                    sampler_type='mcmc', **params):
     """Fit the model to daily returns.
@@ -721,8 +723,8 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
         raise ValueError('Can not specify `random_seed`.')
     sampler_args['random_seed'] = seed
 
-    builder = ModelBuilder(data, algos, factors=factors,
-                           gains_factors=gains_factors, **params)
+    builder = ReturnsModelBuilder(data, algos, factors=factors,
+                                  gains_factors=gains_factors, **params)
     model, coords, dims = builder.model, builder.coords, builder.dims
 
     timestamp = datetime.isoformat(datetime.now())
@@ -741,6 +743,7 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
     trace.attrs['warnings'] = json.dumps([str(warn) for warn in warns])
     trace.attrs['seed'] = seed
     trace.attrs['model-version'] = get_versions()['version']
+    trace.attrs['model-type'] = RETURNS_MODEL_TYPE
 
     if save_data:
         trace.coords['algodata'] = algos.columns
@@ -782,8 +785,8 @@ _DEFAULT_SHRINKAGE = {
 }
 
 
-def fit_single(data, algos=None, population_fit=None, sampler_args=None,
-               seed=None, factors=None, **params):
+def fit_returns_single(data, algos=None, population_fit=None, sampler_args=None,
+                       seed=None, factors=None, **params):
     """Fit the model to algorithms and use an earlier run for hyperparameters.
 
     Use a model fit with a large number of algorithms to get estimates
@@ -801,8 +804,8 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
         a column 'created_at', with the dates when the algorithm was created.
         All later daily returns are interpreted as author-out-of-sample.
     population_fit : FitResult
-        The result of a previous model fit using `fit_population`. If this
-        is not specified, all necessary parameters have to be specified as
+        The result of a previous model fit using `fit_returns_population`. If
+        this is not specified, all necessary parameters have to be specified as
         keyword arguments.
     sampler_args : dict
         Additional arguments for `pm.sample`
@@ -852,14 +855,15 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
         params.setdefault(name_mu, float(trace_vals.mean()))
         params.setdefault(name_sd, float(trace_vals.std()))
 
-    fit = fit_population(data, algos=algos, sampler_args=sampler_args,
-                         seed=seed, shrinkage=shrinkage, factors=factors,
-                         **params)
+    fit = fit_returns_population(data, algos=algos, sampler_args=sampler_args,
+                                 seed=seed, shrinkage=shrinkage, factors=factors,
+                                 **params)
     if population_fit is not None:
         parent = population_fit.trace
         fit.trace.attrs['parent-params'] = parent.attrs['params']
         fit.trace.attrs['parent-seed'] = parent.attrs['seed']
         fit.trace.attrs['parent-version'] = parent.attrs['model-version']
+        fit.trace.attrs['parent-type'] = RETURNS_MODEL_TYPE
         fit.trace.attrs['parent-id'] = population_fit.id
     return fit
 
