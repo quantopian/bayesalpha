@@ -38,6 +38,7 @@ import bayesalpha.plotting
 _PARAM_DEFAULTS = {
     'shrinkage': 'skew-neg2-normal',
     'corr_type': 'diag',
+    'gains_time': False,
 }
 
 RETURNS_MODEL_TYPE = 'returns-model'
@@ -93,10 +94,11 @@ class ReturnsModelBuilder(object):
 
             vlt = self._build_volatility(Bx_log_vlt)
 
-            gains_mu = self._build_gains_mu(in_sample)
-            #gains_time = self._build_gains_time(Bx_gains)
+            gains = self._build_gains_mu(in_sample)
+            if self.params.pop('gains_time', False):
+                gains_time = self._build_gains_time(Bx_gains)
+                gains = gains + gains_time
 
-            gains = gains_mu# + gains_time
             if len(gains_factors.columns) > 0 and not self._predict:
                 factors_gains = self._build_gains_factors()
                 gains = gains + factors_gains
@@ -256,13 +258,11 @@ class ReturnsModelBuilder(object):
                 'gains_raw', sd=1, mu=0, alpha=-4, shape=k)
 
             author_is = pm.Normal('author_is', shape=k, sd=0.4, mu=0.0)
-            #log_author_is_mu = pm.Normal('log_author_is_mu', mu=-3, sd=3)
-            #log_author_is_sd = pm.HalfNormal('log_author_is_sd', sd=0.8)
-            #log_author_is = pm.Normal('author_is_raw', shape=k, mu=0, sd=1)
-            #author_is = tt.exp(log_author_is * log_author_is_sd + log_author_is_mu)
-            #pm.Deterministic('author_is', author_is)
             gains = pm.Deterministic('gains', gains_sd * gains_raw + gains_mu)
-            gains_all = (1 - is_author_is) * gains[None, :] + author_is[None, :] * is_author_is
+            gains_all = (
+                (1 - is_author_is) * gains[None, :]
+                + author_is[None, :] * is_author_is
+            )
             gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'skew-normal':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
@@ -303,7 +303,6 @@ class ReturnsModelBuilder(object):
         self.dims.update({
             'gains_time_sd_raw': ('algo',),
             'gains_time_sd': ('algo',),
-            #'log_gains_time_sd': ('algo',),
             'gains_time_raw': ('algo', 'time_raw_gains'),
             'gains_time': ('algo', 'time'),
         })
