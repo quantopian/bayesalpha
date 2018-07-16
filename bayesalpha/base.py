@@ -2,11 +2,10 @@
 
 import json
 import hashlib
-from abc import ABC, abstractmethod
 import xarray as xr
 
 
-class BayesAlphaResult(ABC):
+class BayesAlphaResult(object):
     """ A wrapper around a PyMC3 trace as a xarray Dataset. """
 
     def __init__(self, trace):
@@ -20,7 +19,6 @@ class BayesAlphaResult(ABC):
     def _load(cls, trace):
         return cls(trace=trace)
 
-    @abstractmethod
     def rebuild_model(self, **kwargs):
         pass
 
