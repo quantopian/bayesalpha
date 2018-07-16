@@ -17,9 +17,12 @@ class BayesAlphaResult(ABC):
         self._trace.to_netcdf(filename, group=group, **args)
 
     @classmethod
-    def load(cls, filename, group=None):
-        trace = xr.open_dataset(filename, group=group)
+    def _load(cls, trace):
         return cls(trace=trace)
+
+    @abstractmethod
+    def rebuild_model(self, **kwargs):
+        pass
 
     @property
     def trace(self):
@@ -72,6 +75,3 @@ class BayesAlphaResult(ABC):
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
 
-    @abstractmethod
-    def rebuild_model(self, **kwargs):
-        pass
