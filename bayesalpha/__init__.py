@@ -1,5 +1,5 @@
-from .model import fit_single, fit_population
-from .author_model import fit_authors
+from .model import fit_single, fit_population, ReturnsModelResult
+from .author_model import fit_authors, AuthorModelResult
 
 from ._version import get_versions
 __version__ = get_versions()['version']
