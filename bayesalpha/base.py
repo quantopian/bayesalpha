@@ -2,10 +2,11 @@
 
 import json
 import hashlib
+from abc import ABC, abstractmethod
 import xarray as xr
 
 
-class BayesAlphaResult(object):
+class BayesAlphaResult(ABC):
     """ A wrapper around a PyMC3 trace as a xarray Dataset. """
 
     def __init__(self, trace):
@@ -70,3 +71,7 @@ class BayesAlphaResult(object):
         if not self.ok:
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
+
+    @abstractmethod
+    def rebuild_model(self, **kwargs):
+        pass
