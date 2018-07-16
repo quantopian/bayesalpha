@@ -11,8 +11,8 @@ import pandas as pd
 import xarray as xr
 from sklearn.preprocessing import LabelEncoder
 import pymc3 as pm
-from bayesalpha.serialize import to_xarray
-from bayesalpha._version import get_versions
+from .serialize import to_xarray
+from ._version import get_versions
 from .base import BayesAlphaResult
 
 AUTHOR_MODEL_TYPE = 'author-model'
