@@ -678,7 +678,7 @@ class Optimizer(object):
         return xr.DataArray(weights, coords=[algos], name='weights')
 
 
-def fit_population(data, algos=None, sampler_args=None, save_data=True,
+def fit_returns_population(data, algos=None, sampler_args=None, save_data=True,
                    seed=None, factors=None, gains_factors=None,
                    sampler_type='mcmc', **params):
     """Fit the model to daily returns.
@@ -785,8 +785,8 @@ _DEFAULT_SHRINKAGE = {
 }
 
 
-def fit_single(data, algos=None, population_fit=None, sampler_args=None,
-               seed=None, factors=None, **params):
+def fit_returns_single(data, algos=None, population_fit=None, sampler_args=None,
+                       seed=None, factors=None, **params):
     """Fit the model to algorithms and use an earlier run for hyperparameters.
 
     Use a model fit with a large number of algorithms to get estimates
@@ -804,8 +804,8 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
         a column 'created_at', with the dates when the algorithm was created.
         All later daily returns are interpreted as author-out-of-sample.
     population_fit : FitResult
-        The result of a previous model fit using `fit_population`. If this
-        is not specified, all necessary parameters have to be specified as
+        The result of a previous model fit using `fit_returns_population`. If
+        this is not specified, all necessary parameters have to be specified as
         keyword arguments.
     sampler_args : dict
         Additional arguments for `pm.sample`
@@ -855,9 +855,9 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
         params.setdefault(name_mu, float(trace_vals.mean()))
         params.setdefault(name_sd, float(trace_vals.std()))
 
-    fit = fit_population(data, algos=algos, sampler_args=sampler_args,
-                         seed=seed, shrinkage=shrinkage, factors=factors,
-                         **params)
+    fit = fit_returns_population(data, algos=algos, sampler_args=sampler_args,
+                                 seed=seed, shrinkage=shrinkage, factors=factors,
+                                 **params)
     if population_fit is not None:
         parent = population_fit.trace
         fit.trace.attrs['parent-params'] = parent.attrs['params']

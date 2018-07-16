@@ -73,22 +73,22 @@ def data():
         )
 
 
-def test_fit_population(observations, algo_meta, Sigma_type):
-    trace = bayesalpha.fit_population(
+def test_fit_returns_population(observations, algo_meta, Sigma_type):
+    trace = bayesalpha.fit_returns_population(
         observations, algo_meta, sampler_args={'draws': 10, 'tune': 0, 'chains': 1},
         corr_type=Sigma_type
     )
 
 
-def test_fit_population_vi(observations, algo_meta, Sigma_type):
-    trace = bayesalpha.fit_population(
+def test_fit_returns_population_vi(observations, algo_meta, Sigma_type):
+    trace = bayesalpha.fit_returns_population(
         observations, algo_meta, sampler_type='vi',
         sampler_args={'n': 1},
         corr_type=Sigma_type
     )
 
 
-def test_fit_author_model(data):
+def test_fit_authors(data):
     trace = bayesalpha.fit_authors(data,
                                    sampler_type='mcmc',
                                    sampler_args={
