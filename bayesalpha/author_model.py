@@ -15,6 +15,8 @@ from bayesalpha.serialize import to_xarray
 from bayesalpha._version import get_versions
 from .base import BayesAlphaResult
 
+AUTHOR_MODEL_TYPE = 'author-model'
+
 
 class AuthorModelBuilder(object):
     """ Class to build the author model.  """
@@ -224,6 +226,7 @@ def fit_authors(data,
     trace.attrs['warnings'] = json.dumps([str(warn) for warn in warns])
     trace.attrs['seed'] = seed
     trace.attrs['model-version'] = get_versions()['version']
+    trace.attrs['model-type'] = AUTHOR_MODEL_TYPE
 
     return AuthorModelResult(trace)
 

@@ -37,6 +37,10 @@ class BayesAlphaResult(object):
         return self._trace.attrs['model-version']
 
     @property
+    def model_type(self):
+        return self._trace.attrs['model-type']
+
+    @property
     def params_hash(self):
         params = json.dumps(self.params, sort_keys=True)
         hasher = hashlib.sha256(params.encode())

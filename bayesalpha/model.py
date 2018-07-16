@@ -40,6 +40,8 @@ _PARAM_DEFAULTS = {
     'corr_type': 'diag',
 }
 
+RETURNS_MODEL_TYPE = 'returns-model'
+
 
 class ModelBuilder(object):
     def __init__(self, data, algos, factors=None, predict=False,
@@ -741,6 +743,7 @@ def fit_population(data, algos=None, sampler_args=None, save_data=True,
     trace.attrs['warnings'] = json.dumps([str(warn) for warn in warns])
     trace.attrs['seed'] = seed
     trace.attrs['model-version'] = get_versions()['version']
+    trace.attrs['model-type'] = RETURNS_MODEL_TYPE
 
     if save_data:
         trace.coords['algodata'] = algos.columns
@@ -860,6 +863,7 @@ def fit_single(data, algos=None, population_fit=None, sampler_args=None,
         fit.trace.attrs['parent-params'] = parent.attrs['params']
         fit.trace.attrs['parent-seed'] = parent.attrs['seed']
         fit.trace.attrs['parent-version'] = parent.attrs['model-version']
+        fit.trace.attrs['parent-type'] = RETURNS_MODEL_TYPE
         fit.trace.attrs['parent-id'] = population_fit.id
     return fit
 
