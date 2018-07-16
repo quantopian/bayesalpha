@@ -4,11 +4,9 @@ import random
 import warnings
 import json
 from datetime import datetime
-import hashlib
 
 import numpy as np
 import pandas as pd
-import xarray as xr
 from sklearn.preprocessing import LabelEncoder
 import pymc3 as pm
 from .serialize import to_xarray
@@ -36,7 +34,7 @@ class AuthorModelBuilder(object):
         """
         self.num_authors = data.meta_user_id.nunique()
         self.num_algos = data.meta_algorithm_id.nunique()
-        # For num_backtests, nunique(), count() and len(data) should be the same
+        # For num_backtests, nunique() and count() should be the same
         self.num_backtests = data.meta_code_id.nunique()
 
         # Which algos correspond to which authors?
@@ -179,8 +177,8 @@ def fit_authors(data,
         Note that currently, backtests are deduplicated based on code id.
     ::
         meta_user_id   meta_algorithm_id   meta_code_id   perf_sharpe_ratio_is
-    0   abcdef123456   ghijkl789123        abcdef000000   0.919407 
-    1   abcdef123456   ghijkl789123        abcdef000001   1.129353 
+    0   abcdef123456   ghijkl789123        abcdef000000   0.919407
+    1   abcdef123456   ghijkl789123        abcdef000001   1.129353
     2   abcdef123456   ghijkl789123        abcdef000002   -0.005934
 
     sampler_type : str

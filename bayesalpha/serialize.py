@@ -49,7 +49,9 @@ def to_xarray(trace, coords, dims):
             dims_str = dims_str + dims[key]
         vals = trace.get_values(key, combine=False, squeeze=False)
         vals = np.array(vals)
-        data[key] = xr.DataArray(vals, {v: coords[v] for v in dims_str}, dims=dims_str)
+        data[key] = xr.DataArray(vals,
+                                 {v: coords[v] for v in dims_str},
+                                 dims=dims_str)
 
     return data
 

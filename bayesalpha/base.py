@@ -2,7 +2,6 @@
 
 import json
 import hashlib
-import xarray as xr
 
 
 class BayesAlphaResult(object):
@@ -72,4 +71,3 @@ class BayesAlphaResult(object):
         if not self.ok:
             warnings = self.warnings
             raise RuntimeError('Problems during sampling: %s' % warnings)
-
