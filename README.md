@@ -8,10 +8,10 @@ Bayesian models for alpha.
 
 There are currently two models:
 
-- the **returns model**, which ingests a backtest. It computes (among other
-  things) a forwards-looking gains parameter (which is basically a Sharpe
-  ratio). Of interest is `P(gains > 0)`; that is, the probability that the
-  algorithm will make money. Originally authored by Adrian Seyboldt.
+- the **returns model**, which ingests a returns-stream. It computes (among
+  other things) a forwards-looking gains parameter (which is basically a
+  Sharpe ratio). Of interest is `P(gains > 0)`; that is, the probability that
+  the algorithm will make money. Originally authored by Adrian Seyboldt.
 
 - the **author model**, which ingests the in-sample Sharpe ratios of user-run
   backtests. It computes (among other things) average Sharpe delivered at a
