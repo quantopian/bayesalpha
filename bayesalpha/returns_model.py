@@ -263,7 +263,6 @@ class ReturnsModelBuilder(object):
                 (1 - is_author_is) * gains[None, :]
                 + author_is[None, :] * is_author_is
             )
-            gains_all = gains[None, :] + author_is[None, :] * is_author_is
         elif shrinkage == 'skew-normal':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
             pm.Deterministic('log_gains_sd', tt.log(gains_sd))
@@ -632,6 +631,21 @@ class Optimizer(object):
             Risk aversion parameter. This value can be overridden
             by passing a different value to `solve`.
         factor_penalty : float
+            Add a penalty during the optimization for portfolios that have
+            exposure to risk factors. This uses the estimates of risk exposure
+            from the regression in bayesalpha. High values mean that we are
+            willing to take hits on the predicted portfolio in order to
+            decrease risk exposure.
+        max_weights : list
+            A maximum weight for each algo.
+        exposure_limit : float
+            A hard limit for risk exposures of each weighted algo in the
+            portfolio. This uses the position based risk exposure passed in as
+            `predictions.position_exposures`, and limits the maximum risk
+            exposure of each algo over that time period.
+        exposure_penalty : float
+            This also uses the position based exposure, but adds a quadratic
+            penalty term during optimization instead of a hard limit.
         """
         if cvxpy is None:
             raise RuntimeError('Optimization requires cvxpy>=1.0')
