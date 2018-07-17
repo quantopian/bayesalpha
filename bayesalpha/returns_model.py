@@ -154,8 +154,7 @@ class ReturnsModelBuilder(object):
             vlt_mu_dist = pm.Lognormal.dist(mu=-2, sd=0.5, shape=k)
             chol_cov_packed = pm.LKJCholeskyCov(
                 'chol_cov_packed_mu', n=k, eta=2, sd_dist=vlt_mu_dist)
-            chol_cov = \
-                pm.expand_packed_triangular(k, chol_cov_packed) / np.exp(4)
+            chol_cov = pm.expand_packed_triangular(k, chol_cov_packed) / np.exp(4)
             cov = tt.dot(chol_cov, chol_cov.T)
             variance_mu = tt.diag(cov)
             corr = cov / tt.sqrt(variance_mu[:, None] * variance_mu[None, :])
@@ -169,8 +168,7 @@ class ReturnsModelBuilder(object):
             self.dims['cov_mu'] = ('algo', 'algo_')
             self.dims['corr_mu'] = ('algo', 'algo_')
             self.dims['chol_cov_mu'] = ('algo', 'algo_')
-            log_vlt_mu = \
-                pm.Deterministic('log_vlt_mu', tt.log(variance_mu) / 2.)
+            log_vlt_mu = pm.Deterministic('log_vlt_mu', tt.log(variance_mu) / 2.)
         else:
             raise NotImplementedError
         self.dims['log_vlt_mu'] = ('algo',)
@@ -435,8 +433,7 @@ class ReturnsModelBuilder(object):
             if factor_scale_halflife is not None and len(factor_scales) > 0:
                 factor_rets = np.random.randn(len(factor_scales), len(time))
                 factor_rets = factor_rets * factor_scales[:, None]
-                factor_rets = \
-                    factor_rets[None, :, :] * factor_exposures.T[:, :, None]
+                factor_rets = factor_rets[None, :, :] * factor_exposures.T[:, :, None]
                 factor_rets = factor_rets.sum(1)
                 returns[...] += factor_rets
 

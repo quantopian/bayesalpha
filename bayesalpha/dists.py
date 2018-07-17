@@ -87,9 +87,9 @@ class GPExponential(pm.Continuous):
             logdet = 2 * n * (np.log(diag_chol) / sigma).sum()
         delta_trans = diag_chol * delta
         delta_trans = tt.set_subtensor(
-                delta_trans[:, 1:],
-                delta_trans[:, 1:] + mdiag_chol * delta[:, :-1]
-            )
+            delta_trans[:, 1:],
+            delta_trans[:, 1:] + mdiag_chol * delta[:, :-1]
+        )
 
         return -0.5 * (logdet + (delta_trans ** 2).sum())
 
@@ -471,9 +471,10 @@ class EQCorrMvNormal(pm.Continuous):
                      broadcast_conditions=False)
 
     def random(self, point=None, size=None):
-        mu, std, corr, clust = \
-            draw_values([self.mu, self.std,
-                         self.corr, self.clust], point=point)
+        mu, std, corr, clust = draw_values(
+            [self.mu, self.std, self.corr, self.clust],
+            point=point
+        )
         return self.st_random(mu, std,
                               corr, clust,
                               size=size,
@@ -498,8 +499,9 @@ class EQCorrMvNormal(pm.Continuous):
             std = np.repeat(std, k)
         if std.ndim == 1:
             std = std[None, :]
-        clust_ids, clust_pos, clust_counts = \
-            np.unique(clust, return_inverse=True, return_counts=True)
+        clust_ids, clust_pos, clust_counts = np.unique(
+            clust, return_inverse=True, return_counts=True
+        )
         # inner representation for clusters
         clust_order = np.argsort(clust_pos)
         # this order aligns means and std with block matrix representation
