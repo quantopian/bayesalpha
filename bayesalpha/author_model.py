@@ -271,3 +271,11 @@ def _check_data(data):
     # FIXME remove this check once all feature factory features are debugged.
     if (data == -99999).any().any():
         raise ValueError('Data set contains -99999s.')
+
+    # The encodings implicitly assume that the data is sorted.
+    if ((data.index != data.sort_index(level=['meta_user_id',
+                                              'meta_algorithm_id',
+                                              'meta_code_id']).index)).any():
+        msg = ("Data set not sorted by ['meta_user_id', 'meta_algorithm_id', "
+               "'meta_code_id'].")
+        raise ValueError(msg)
