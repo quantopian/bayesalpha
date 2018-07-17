@@ -380,9 +380,9 @@ class ReturnsModelBuilder(object):
 
         if factor_scale_halflife is not None:
             factor_scales = (self.factors
-                             .ewm(halflife=factor_scale_halflife)
-                             .std()
-                             .iloc[-1])
+                .ewm(halflife=factor_scale_halflife)
+                .std()
+                .iloc[-1])
 
         n_gains = len(self.coords['time_raw_gains'])
         n_vlt = len(self.coords['time_raw_vlt'])
