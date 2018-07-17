@@ -197,6 +197,8 @@ def fit_authors(data,
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
 
+    _check_data(data)
+
     if seed is None:
         seed = int(random.getrandbits(31))
     else:
