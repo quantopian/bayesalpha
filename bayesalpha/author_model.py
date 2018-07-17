@@ -40,8 +40,11 @@ class AuthorModelBuilder(object):
         self.num_backtests = data.meta_code_id.nunique()
 
         # Which algos correspond to which authors?
-        df = (data[['meta_user_id', 'meta_algorithm_id']]
-              .drop_duplicates(subset='meta_algorithm_id')
+        df = (data.sort_values(['meta_user_id',
+                                'meta_algorithm_id',
+                                'meta_code_id'])
+              .loc[['meta_user_id', 'meta_algorithm_id']]
+              .drop_duplicates(subset='meta_algorithm_id', keep='first')
               .reset_index()
               .meta_user_id
               .astype(str))
@@ -271,11 +274,3 @@ def _check_data(data):
     # FIXME remove this check once all feature factory features are debugged.
     if (data == -99999).any().any():
         raise ValueError('Data set contains -99999s.')
-
-    # The encodings implicitly assume that the data is sorted.
-    if ((data.index != data.sort_index(level=['meta_user_id',
-                                              'meta_algorithm_id',
-                                              'meta_code_id']).index)).any():
-        msg = ("Data set not sorted by ['meta_user_id', 'meta_algorithm_id', "
-               "'meta_code_id'].")
-        raise ValueError(msg)
