@@ -43,7 +43,7 @@ class AuthorModelBuilder(object):
         df = (data.sort_values(['meta_user_id',
                                 'meta_algorithm_id',
                                 'meta_code_id'])
-              .loc[['meta_user_id', 'meta_algorithm_id']]
+              .loc[:, ['meta_user_id', 'meta_algorithm_id']]
               .drop_duplicates(subset='meta_algorithm_id', keep='first')
               .reset_index()
               .meta_user_id
