@@ -38,6 +38,7 @@ import bayesalpha.plotting
 _PARAM_DEFAULTS = {
     'shrinkage': 'skew-neg2-normal',
     'corr_type': 'diag',
+    'gains_time': False,
 }
 
 RETURNS_MODEL_TYPE = 'returns-model'
@@ -93,10 +94,11 @@ class ReturnsModelBuilder(object):
 
             vlt = self._build_volatility(Bx_log_vlt)
 
-            gains_mu = self._build_gains_mu(in_sample)
-            gains_time = self._build_gains_time(Bx_gains)
+            gains = self._build_gains_mu(in_sample)
+            if self.params.pop('gains_time', False):
+                gains_time = self._build_gains_time(Bx_gains)
+                gains = gains + gains_time
 
-            gains = gains_mu + gains_time
             if len(gains_factors.columns) > 0 and not self._predict:
                 factors_gains = self._build_gains_factors()
                 gains = gains + factors_gains
@@ -205,6 +207,7 @@ class ReturnsModelBuilder(object):
             'gains_theta': ('algo',),
             'gains_eta': ('algo',),
             'author_is': ('algo',),
+            'author_is_raw': ('algo',),
             'gains': ('algo',),
             'gains_raw': ('algo',),
         })
@@ -250,13 +253,16 @@ class ReturnsModelBuilder(object):
         elif shrinkage == 'skew-neg2-normal':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
             pm.Deterministic('log_gains_sd', tt.log(gains_sd))
-            gains_mu = pm.Normal('gains_mu', mu=0.02, sd=0.1)
+            gains_mu = pm.Normal('gains_mu', sd=0.1)
             gains_raw = pm.SkewNormal(
                 'gains_raw', sd=1, mu=0, alpha=-4, shape=k)
 
-            author_is = pm.Normal('author_is', shape=k, sd=0.4, mu=0.1)
+            author_is = pm.Normal('author_is', shape=k, sd=0.4, mu=0.0)
             gains = pm.Deterministic('gains', gains_sd * gains_raw + gains_mu)
-            gains_all = gains[None, :] + author_is[None, :] * is_author_is
+            gains_all = (
+                (1 - is_author_is) * gains[None, :]
+                + author_is[None, :] * is_author_is
+            )
         elif shrinkage == 'skew-normal':
             gains_sd = pm.HalfNormal('gains_sd', sd=0.1)
             pm.Deterministic('log_gains_sd', tt.log(gains_sd))
@@ -296,7 +302,6 @@ class ReturnsModelBuilder(object):
         self.dims.update({
             'gains_time_sd_raw': ('algo',),
             'gains_time_sd': ('algo',),
-            'log_gains_time_sd': ('algo',),
             'gains_time_raw': ('algo', 'time_raw_gains'),
             'gains_time': ('algo', 'time'),
         })
@@ -409,6 +414,7 @@ class ReturnsModelBuilder(object):
                                     allow_input_downcast=True)
 
         algos = self.coords['algo']
+        factors = self.coords['factor']
         time = self.coords['time']
 
         def predict(point):
@@ -437,7 +443,8 @@ class ReturnsModelBuilder(object):
                 returns[...] += factor_rets
 
             returns = xr.DataArray(returns, coords=[algos, time])
-            return returns
+            exposures = xr.DataArray(factor_exposures, coords=[factors, algos])
+            return xr.Dataset({'returns': returns, 'exposures': exposures})
 
         return predict
 
@@ -554,21 +561,29 @@ class ReturnsModelResult(BayesAlphaResult):
         predict_func = model.make_predict_function(factor_scale_halflife)
         coords = [self.trace.chain, self.trace.sample,
                   self.trace.algo, model.coords['time']]
+        coords_exposures = [self.trace.chain, self.trace.sample,
+                            self.trace.factor, self.trace.algo]
         if n_repl is not None:
             repl_coord = pd.RangeIndex(n_repl, name='sim_repl')
             coords.append(repl_coord)
+            coords_exposures.append(repl_coord)
         shape = [len(vals) for vals in coords]
 
-        prediction_data = np.zeros(shape)
-        predictions = xr.DataArray(prediction_data, coords=coords)
+        returns_data = np.zeros(shape)
+        exposure_data = np.zeros([len(v) for v in coords_exposures])
+        returns = xr.DataArray(returns_data, coords=coords)
+        exposures = xr.DataArray(exposure_data, coords=coords_exposures)
         for (chain, sample), point in self._points(include_transformed=False):
             if n_repl is None:
-                predictions.loc[chain, sample, :, :] = predict_func(point)
+                prediction = predict_func(point)
+                returns.loc[chain, sample, :, :] = prediction.returns
+                exposures.loc[chain, sample, :, :] = prediction.exposures
             else:
                 for repl in repl_coord:
-                    returns = predict_func(point)
-                    predictions.loc[chain, sample, :, :, repl] = returns
-        return predictions
+                    prediction = predict_func(point)
+                    returns.loc[chain, sample, :, :, repl] = prediction.returns
+                    exposures.loc[chain, sample, :, :, repl] = prediction.exposures
+        return xr.Dataset({'returns': returns, 'exposures': exposures})
 
     def predict_value(self, n_days, n_repl=None, factor_scale_halflife=None):
         model = self._make_prediction_model(n_days)
@@ -602,34 +617,52 @@ class ReturnsModelResult(BayesAlphaResult):
 
 class Optimizer(object):
     def __init__(self, predictions, utility='isoelastic', lmda=None,
-                 factor_weights=None, max_weights=None):
+                 factor_penalty=None, max_weights=None, exposure_limit=None,
+                 exposure_penalty=None):
         """Compute a portfolio based on model predictions.
 
         Parameters
         ----------
-        predictions : xr.DataSet
+        predictions : xr.Dataset
             Predictions as returned by fit.predict_value
         utility : ['isoelastic', 'exp'], default='isoelastic'
             The utility function to use.
         lmda : float
             Risk aversion parameter. This value can be overridden
             by passing a different value to `solve`.
-        factor_weights : ndarray
-            TODO
+        factor_penalty : float
+            Add a penalty during the optimization for portfolios that have
+            exposure to risk factors. This uses the estimates of risk exposure
+            from the regression in bayesalpha. High values mean that we are
+            willing to take hits on the predicted portfolio in order to
+            decrease risk exposure.
+        max_weights : list
+            A maximum weight for each algo.
+        exposure_limit : float
+            A hard limit for risk exposures of each weighted algo in the
+            portfolio. This uses the position based risk exposure passed in as
+            `predictions.position_exposures`, and limits the maximum risk
+            exposure of each algo over that time period.
+        exposure_penalty : float
+            This also uses the position based exposure, but adds a quadratic
+            penalty term during optimization instead of a hard limit.
         """
         if cvxpy is None:
             raise RuntimeError('Optimization requires cvxpy>=1.0')
-        self._returns = predictions
-        self._problem = self._build_problem(lmda, factor_weights, utility)
+        self._predictions = predictions
+        self._problem = self._build_problem(lmda, utility, factor_penalty,
+                                            exposure_limit, exposure_penalty)
         if max_weights is None:
             max_weights = [1] * len(predictions.algo)
         self._max_weights = max_weights
 
-    def _build_problem(self, lmda_vals, factor_weights_vals, utility):
-        n_predict = (len(self._returns.chain)
-                     * len(self._returns.sample)
-                     * len(self._returns.sim_repl))
-        n_algos = len(self._returns.algo)
+    def _build_problem(self, lmda_vals, utility, factor_penalty=None,
+                       exposure_limit=None, exposure_penalty=None):
+        n_predict = (len(self._predictions.chain)
+                     * len(self._predictions.sample)
+                     * len(self._predictions.sim_repl))
+        n_algos = len(self._predictions.algo)
+        n_factors = len(self._predictions.factor)
         lmda = cvxpy.Parameter(name='lambda', nonneg=True)
         returns = cvxpy.Parameter(shape=(n_predict, n_algos), name='returns')
         max_weights = cvxpy.Parameter(shape=(n_algos), name='max_weights')
@@ -642,13 +675,47 @@ class Optimizer(object):
         else:
             raise ValueError('Unknown utility: %s' % utility)
 
-        problem = cvxpy.Problem(
-            cvxpy.Minimize(risk),
-            [cvxpy.sum(weights) == 1, weights >= 0, weights <= max_weights])
+        if factor_penalty is not None:
+            penalty = cvxpy.Parameter(shape=(), name='factor_penalty', nonneg=True)
+            self._factor_penalty_p = penalty
+            for i in range(n_factors):
+                exposures = cvxpy.Parameter(shape=(n_predict, n_algos),
+                                            name='exposures_%s' % i)
+                exposures.value = self._predictions.exposures.isel(factor=i).stack(
+                    prediction=('chain', 'sample', 'sim_repl')).values.T
+                risk_factor = cvxpy.sum_squares(exposures * weights)
+                risk = risk + penalty * risk_factor
+
+        if exposure_penalty is not None:
+            penalty = cvxpy.Parameter(shape=(), name='exposure_penalty', nonneg=True)
+            self._exposure_penalty_p = penalty
+            exposure_data = self._predictions.position_exposures
+            n_history = len(exposure_data.time_hist)
+            exposures = cvxpy.Parameter(shape=(n_history, n_algos),
+                                        name='position_exposures')
+            exposures.value = exposure_data.values
+            risk_factor = cvxpy.sum_squares(exposures * weights)
+            risk = risk + penalty * risk_factor * n_predict / n_history
+
+        constraints = [cvxpy.sum(weights) == 1, weights >= 0, weights <= max_weights]
+        if exposure_limit is not None:
+            limit = cvxpy.Parameter(name='exposure_limit', nonneg=True)
+            self._exposure_limit = limit
+            limit.value = exposure_limit
+            exposures_lower = cvxpy.Parameter(shape=(n_algos,), name='exposures_lower')
+            exposures_upper = cvxpy.Parameter(shape=(n_algos,), name='exposures_upper')
+            exposure_data = self._predictions.position_exposures
+            exposures_lower.value = exposure_data.sel(quantile='lower').values
+            exposures_upper.value = exposure_data.sel(quantile='upper').values
+            lower = cvxpy.sum(weights * exposures_lower) >= -limit
+            upper = cvxpy.sum(weights * exposures_upper) <= limit
+            constraints.extend([lower, upper])
+
+        problem = cvxpy.Problem(cvxpy.Minimize(risk), constraints)
 
         if lmda_vals is not None:
             lmda.value = lmda_vals
-        predictions = self._returns.stack(
+        predictions = self._predictions.cum_final.stack(
             prediction=('chain', 'sample', 'sim_repl'))
         # +1 because we want the final wealth, when we start with
         # a unit of money.
@@ -660,12 +727,17 @@ class Optimizer(object):
         self._max_weights_v = max_weights
         return problem
 
-    def solve(self, lmda=None, factor_weights=None, max_weights=None, **kwargs):
+    def solve(self, lmda=None, factor_penalty=None, max_weights=None,
+              exposure_limit=None, exposure_penalty=None, **kwargs):
         """Find the optimal weights for the portfolio."""
         if lmda is not None:
             self._lmda_p.value = lmda
-        if factor_weights is not None:
-            self._factor_weights_p.value = factor_weights
+        if exposure_penalty is not None:
+            self._exposure_penalty_p.value = exposure_penalty
+        if factor_penalty is not None:
+            self._factor_penalty_p.value = factor_penalty
+        if exposure_limit is not None:
+            self._exposure_limit.value = exposure_limit
         if max_weights is not None:
             self._max_weights_v.value = max_weights
         else:
@@ -674,7 +746,7 @@ class Optimizer(object):
         if self._problem.status != 'optimal':
             raise ValueError('Optimization did not converge.')
         weights = self._weights_v.value.ravel().copy()
-        algos = self._returns.algo
+        algos = self._predictions.algo
         return xr.DataArray(weights, coords=[algos], name='weights')
 
 
