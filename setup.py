@@ -4,8 +4,8 @@ from setuptools import setup, find_packages
 import versioneer
 
 DISTNAME = 'bayesalpha'
-AUTHOR = 'Adrian Seyboldt'
-AUTHOR_EMAIL = 'adrian.seyboldt@gmail.com'
+AUTHOR = 'Adrian Seyboldt & George Ho'
+AUTHOR_EMAIL = 'aseyboldt@quantopian.com'
 
 requirements = [
     'Bottleneck>=1.1',
@@ -14,7 +14,7 @@ requirements = [
     'xarray>=0.9',
     'sklearn',
     'seaborn',
-    'empyrical',
+    'empyrical>=0.5.0',
     'netcdf4',
     'pytest-cov',
     'pytest-timeout',
