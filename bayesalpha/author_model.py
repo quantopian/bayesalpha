@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 import pymc3 as pm
+import xarray as xr
 from .serialize import to_xarray
 from ._version import get_versions
 from .base import BayesAlphaResult
@@ -155,7 +156,12 @@ class AuthorModelResult(BayesAlphaResult):
     def rebuild_model(self, data=None):
         """ Return an AuthorModelBuilder that recreates the original model. """
         if data is None:
-            data = self.trace._data.to_pandas().copy()
+            data = (self.trace
+                        ._data
+                        .to_pandas()
+                        .rename('perf_sharpe_ratio_is')
+                        .reset_index()
+                        .copy())
 
         return AuthorModelBuilder(data)
 
@@ -232,6 +238,12 @@ def fit_authors(data,
     trace.attrs['seed'] = seed
     trace.attrs['model-version'] = get_versions()['version']
     trace.attrs['model-type'] = AUTHOR_MODEL_TYPE
+
+    if save_data:
+        d = data.set_index(['meta_user_id',
+                            'meta_algorithm_id',
+                            'meta_code_id']).squeeze()
+        trace['_data'] = xr.DataArray(d)
 
     return AuthorModelResult(trace)
 
