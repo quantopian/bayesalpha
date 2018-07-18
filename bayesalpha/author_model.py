@@ -57,27 +57,27 @@ class AuthorModelBuilder(object):
         self.model = self._build_model(data)
 
         self.coords = {
-            'author':    data.meta_user_id.drop_duplicates().values,
-            'algo':      data.meta_algorithm_id.drop_duplicates().values,
-            'backtest':  data.meta_code_id.values
+            'meta_user_id':      data.meta_user_id.drop_duplicates().values,
+            'meta_algorithm_id': data.meta_algorithm_id.drop_duplicates().values,
+            'meta_code_id':      data.meta_code_id.values
         }
 
         self.dims = {
             'mu_global':       (),
-            'mu_author':       ('author', ),
-            'mu_author_raw':   ('author', ),
+            'mu_author':       ('meta_user_id', ),
+            'mu_author_raw':   ('meta_user_id', ),
             'mu_author_sd':    (),
-            'sigma_author':    ('author', ),
+            'sigma_author':    ('meta_user_id', ),
             'sigma_author_sd': (),
-            'mu_algo':         ('algo', ),
-            'mu_algo_raw':     ('algo', ),
+            'mu_algo':         ('meta_algorithm_id', ),
+            'mu_algo_raw':     ('meta_algorithm_id', ),
             'mu_algo_sd':      (),
-            'sigma_algo':      ('algo', ),
+            'sigma_algo':      ('meta_algorithm_id', ),
             'sigma_algo_sd':   (),
-            'mu_backtest':     ('backtest', ),
-            'sigma_backtest':  ('backtest', ),
-            'alpha_author':    ('author', ),
-            'alpha_algo':      ('algo', )
+            'mu_backtest':     ('meta_code_id', ),
+            'sigma_backtest':  ('meta_code_id', ),
+            'alpha_author':    ('meta_user_id', ),
+            'alpha_algo':      ('meta_algorithm_id', )
         }
 
     def _build_model(self, data):
