@@ -38,8 +38,8 @@ class AuthorModelBuilder(object):
         self.num_backtests = data.meta_code_id.nunique()
 
         # Which algos correspond to which authors?
-        df = (data[['meta_user_id', 'meta_algorithm_id']]
-              .drop_duplicates(subset='meta_algorithm_id')
+        df = (data.loc[:, ['meta_user_id', 'meta_algorithm_id']]
+              .drop_duplicates(subset='meta_algorithm_id', keep='first')
               .reset_index()
               .meta_user_id
               .astype(str))
@@ -194,6 +194,13 @@ def fit_authors(data,
 
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
+
+    # Check data and sort
+    _check_data(data)
+    data = (data.sort_values(['meta_user_id',
+                              'meta_algorithm_id',
+                              'meta_code_id'])
+                .reset_index(drop=True))
 
     if seed is None:
         seed = int(random.getrandbits(31))
