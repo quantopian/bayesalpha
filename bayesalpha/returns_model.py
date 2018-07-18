@@ -8,7 +8,6 @@ import theano.sparse
 import theano.tensor as tt
 import pymc3 as pm
 import json
-import hashlib
 import xarray as xr
 from datetime import datetime
 import random
@@ -361,12 +360,13 @@ class ReturnsModelBuilder(object):
         })
         gains_factors = self.gains_factors
         n_algos, n_gains_factors = self.n_algos, self.n_gains_factors
-        sd = pm.HalfNormal('gains_factor_algo_sd', sd=0.4, shape=n_gains_factors)
+        sd = pm.HalfNormal('gains_factor_algo_sd', sd=0.4,
+                           shape=n_gains_factors)
         raw = pm.StudentT('gains_factor_algo_raw', nu=7, mu=0, sd=1,
                           shape=(n_gains_factors, n_algos))
         vals = sd[:, None] * raw
         pm.Deterministic('gains_factor_algo', vals)
-        return (vals[:, None, :] * gains_factors.values.T[:, :, None]).sum(0).T 
+        return (vals[:, None, :] * gains_factors.values.T[:, :, None]).sum(0).T
 
     def _build_returns_factors(self):
         self.dims.update({
@@ -376,7 +376,8 @@ class ReturnsModelBuilder(object):
         n_algos, n_factors = self.n_algos, self.n_factors
         factor_algo = pm.StudentT('factor_algo', nu=3, mu=0, sd=2,
                                   shape=(n_factors, n_algos))
-        return (factor_algo[:, None, :] * factors.values.T[:, :, None]).sum(0).T
+        return (factor_algo[:, None, :]
+                * factors.values.T[:, :, None]).sum(0).T
 
     def make_predict_function(self, factor_scale_halflife=None):
         if not self._predict:
@@ -449,8 +450,6 @@ class ReturnsModelBuilder(object):
         return predict
 
 
-
-
 class ReturnsModelResult(BayesAlphaResult):
     def plot_prob(self,
                   algos=None,
@@ -482,7 +481,8 @@ class ReturnsModelResult(BayesAlphaResult):
 
         return ax
 
-    def plot_corr(self, algos=None, corr_threshold=.33, ax=None, cmap=None, **heatmap_kwargs):
+    def plot_corr(self, algos=None, corr_threshold=.33,
+                  ax=None, cmap=None, **heatmap_kwargs):
         corr = self.trace['corr_mu']
         if algos is not None:
             corr = corr.loc[dict(algo=algos, algo_=algos)]
@@ -751,8 +751,8 @@ class Optimizer(object):
 
 
 def fit_returns_population(data, algos=None, sampler_args=None, save_data=True,
-                   seed=None, factors=None, gains_factors=None,
-                   sampler_type='mcmc', **params):
+                           seed=None, factors=None, gains_factors=None,
+                           sampler_type='mcmc', **params):
     """Fit the model to daily returns.
 
     Parameters
@@ -829,7 +829,8 @@ def fit_returns_population(data, algos=None, sampler_args=None, save_data=True,
         except ValueError:
             warnings.warn('Could not save algo metadata, skipping.')
         try:
-            trace['_gains_factors'] = (('time', 'gains_factor'), builder.gains_factors)
+            trace['_gains_factors'] = (('time', 'gains_factor'),
+                                       builder.gains_factors)
         except ValueError:
             warnings.warn('Could not save algo metadata, skipping.')
     return ReturnsModelResult(trace)
@@ -857,8 +858,8 @@ _DEFAULT_SHRINKAGE = {
 }
 
 
-def fit_returns_single(data, algos=None, population_fit=None, sampler_args=None,
-                       seed=None, factors=None, **params):
+def fit_returns_single(data, algos=None, population_fit=None,
+                       sampler_args=None, seed=None, factors=None, **params):
     """Fit the model to algorithms and use an earlier run for hyperparameters.
 
     Use a model fit with a large number of algorithms to get estimates
@@ -928,8 +929,8 @@ def fit_returns_single(data, algos=None, population_fit=None, sampler_args=None,
         params.setdefault(name_sd, float(trace_vals.std()))
 
     fit = fit_returns_population(data, algos=algos, sampler_args=sampler_args,
-                                 seed=seed, shrinkage=shrinkage, factors=factors,
-                                 **params)
+                                 seed=seed, shrinkage=shrinkage,
+                                 factors=factors, **params)
     if population_fit is not None:
         parent = population_fit.trace
         fit.trace.attrs['parent-params'] = parent.attrs['params']
