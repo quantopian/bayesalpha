@@ -5,7 +5,7 @@ import versioneer
 
 DISTNAME = 'bayesalpha'
 AUTHOR = 'Adrian Seyboldt & George Ho'
-AUTHOR_EMAIL = 'aseyboldt@quantopian.com'
+AUTHOR_EMAIL = 'datascience@quantopian.com'
 
 requirements = [
     'Bottleneck>=1.1',
