@@ -160,11 +160,6 @@ class AuthorModelResult(BayesAlphaResult):
                         ._data
                         .to_pandas()
                         .reset_index()
-                        # Rename back to the expected column names.
-                        .rename_axis(['meta_user_id',
-                                      'meta_algorithm_id',
-                                      'meta_code_id',
-                                      'perf_sharpe_ratio_is'], axis=1)
                         .copy())
 
         return AuthorModelBuilder(data)
@@ -246,15 +241,9 @@ def fit_authors(data,
     trace.attrs['model-type'] = AUTHOR_MODEL_TYPE
 
     if save_data:
-        d = (data.set_index(['meta_user_id',
-                             'meta_algorithm_id',
-                             'meta_code_id'])
-                 # Rename index names to avoid name collision.
-                 .rename_axis(['data_meta_user_id',
-                               'data_meta_algorithm_id',
-                               'data_meta_code_id'], axis=0)
-                 .squeeze())
-        trace['_data'] = xr.DataArray(d)
+        # Store the data in long format to avoid creating more dimensions
+        trace['_data'] = xr.DataArray(data, dims=['data_index',
+                                                  'data_columns'])
 
     return AuthorModelResult(trace)
 
