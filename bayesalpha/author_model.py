@@ -194,6 +194,8 @@ def fit_authors(data,
     sampler_type : str
         Whether to use Markov chain Monte Carlo or variational inference.
         Either 'mcmc' or 'vi'. Defaults to 'mcmc'.
+    sampler_args : dict
+        Additional parameters for `pm.sample`.
     save_data : bool
         Whether to store the dataset in the result object.
     seed : int
