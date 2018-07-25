@@ -147,7 +147,7 @@ class AuthorModelBuilder(object):
                                mu=mu_backtest,
                                sd=sigma_backtest,
                                shape=self.num_backtests,
-                               observed=data.perf_sharpe_ratio_is)
+                               observed=data.sharpe_ratio)
 
         return model
 
@@ -181,7 +181,7 @@ def fit_authors(data,
         backtests), indexed by user, algorithm and code ID.
         Note that currently, backtests are deduplicated based on code id.
     ::
-        meta_user_id   meta_algorithm_id   meta_code_id   perf_sharpe_ratio_is
+        meta_user_id   meta_algorithm_id   meta_code_id   sharpe_ratio
     0   abcdef123456   ghijkl789123        abcdef000000   0.919407
     1   abcdef123456   ghijkl789123        abcdef000001   1.129353
     2   abcdef123456   ghijkl789123        abcdef000002   -0.005934
@@ -267,7 +267,7 @@ def _check_data(data):
     if data.meta_code_id.nunique() != data.shape[0]:
         warnings.warn('Data set contains duplicate backtests.')
 
-    if (data.groupby('meta_algorithm_id')['perf_sharpe_ratio_is']
+    if (data.groupby('meta_algorithm_id')['sharpe_ratio']
             .count() < 5).any():
         warnings.warn('Data set contains algorithms with fewer than 5 '
                       'backtests.')
@@ -275,8 +275,8 @@ def _check_data(data):
     if (data.groupby('meta_user_id')['meta_algorithm_id'].nunique() < 5).any():
         warnings.warn('Data set contains users with fewer than 5 algorithms.')
 
-    if ((data.perf_sharpe_ratio_is > 20)
-            | (data.perf_sharpe_ratio_is < -20)).any():
+    if ((data.sharpe_ratio > 20)
+            | (data.sharpe_ratio < -20)).any():
         raise ValueError('Data set contains unrealistic Sharpes: greater than '
                          '20 in magnitude.')
 
