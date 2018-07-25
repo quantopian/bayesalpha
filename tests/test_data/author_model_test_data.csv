@@ -1,4 +1,4 @@
-,meta_user_id,meta_algorithm_id,meta_code_id,perf_sharpe_ratio_is
+,meta_user_id,meta_algorithm_id,meta_code_id,sharpe_ratio
 0,aaa,aaa111,aaa111_0,-1.1645084112820039
 1,aaa,aaa111,aaa111_1,0.5931942359425223
 2,aaa,aaa111,aaa111_2,-1.1642544425301051
