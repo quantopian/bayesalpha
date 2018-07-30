@@ -58,9 +58,9 @@ class AuthorModelBuilder(object):
         # Construct correlation matrix.
         # 0 is a better estimate for mean returns than the sample mean!
         returns_ = returns / returns.std()
-        corr = LedoitWolf(assume_centered=True).fit(returns_).covariance_
+        self.corr = LedoitWolf(assume_centered=True).fit(returns_).covariance_
 
-        self.model = self._build_model(sharpes, corr)
+        self.model = self._build_model(sharpes, self.corr)
 
         self.coords = {
             'meta_user_id':      sharpes.meta_user_id.drop_duplicates().values,
@@ -97,10 +97,10 @@ class AuthorModelBuilder(object):
             Long-format DataFrame of in-sample Sharpe ratios (from user-run
             backtests), indexed by user, algorithm and code ID.
             Note that currently, backtests are deduplicated based on code id.
-
             See fit_authors for more information.
         corr : np.ndarray
-            Output of sklearn's LedoitWolf covariance_
+            Correlation matrix of backtests, using Ledoit-Wolf shrinkage.
+            See fit_authors for more information.
         """
         with pm.Model() as model:
             mu_global = pm.Normal('mu_global', mu=0, sd=3)
@@ -167,16 +167,16 @@ class AuthorModelResult(BayesAlphaResult):
         """ Return an AuthorModelBuilder that recreates the original model. """
         if sharpes is None:
             sharpes = (self.trace
-                        ._sharpes
-                        .to_pandas()
-                        .reset_index()
-                        .copy())
+                       ._sharpes
+                       .to_pandas()
+                       .reset_index()
+                       .copy())
 
         if returns is None:
             returns = (self.trace
-                        ._returns
-                        .to_pandas()
-                        .copy())
+                       ._returns
+                       .to_pandas()
+                       .copy())
 
         return AuthorModelBuilder(sharpes, returns)
 
@@ -205,9 +205,9 @@ def fit_authors(sharpes,
 
     returns : pd.DataFrame
         Wide-format DataFrame of in-sample returns of user-run backtests,
-        indexed by time.
-        Columns are code ids, rows are time (the format of time does not
-        matter).
+        indexed by time. Columns are code ids, rows are time (the format of
+        time does not matter).
+        See fit_authors for more information.
     ::
                   abcd1234      efgh5678      ijkl9123
     2013-06-03   -0.000326      0.002815      0.002110
@@ -232,10 +232,6 @@ def fit_authors(sharpes,
 
     # Check data and sort
     _check_data(sharpes, returns)
-    sharpes = (sharpes.sort_values(['meta_user_id',
-                                    'meta_algorithm_id',
-                                    'meta_code_id'])
-                      .reset_index(drop=True))
 
     if seed is None:
         seed = int(random.getrandbits(31))
@@ -270,9 +266,11 @@ def fit_authors(sharpes,
 
     if save_data:
         # Store the data in long format to avoid creating more dimensions
-        trace['_sharpes'] = xr.DataArray(sharpes, dims=['data_index',
-                                                        'data_columns'])
-        trace['_returns'] = xr.DataArray(returns, dims[])
+        trace['_sharpes'] = xr.DataArray(sharpes, dims=['sharpes_index',
+                                                        'sharpes_columns'])
+        # TODO: complete save data
+        trace['_returns'] = xr.DataArray(returns, dims['returns_index',
+                                                       'returns_columns'])
 
     return AuthorModelResult(trace)
 
@@ -329,7 +327,7 @@ def _check_data(sharpes, returns):
     if len(sharpes.meta_code_id) != len(returns.columns):
         raise ValueError('`sharpes` and `returns` are different lengths.')
 
-    if not set(data.meta_code_id) == set(returns.columns):
+    if not set(sharpes.meta_code_id) == set(returns.columns):
         raise ValueError('`sharpes` and `returns` are the same length, but '
                          'contain different code ids.')
 
