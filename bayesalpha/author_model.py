@@ -207,7 +207,6 @@ def fit_authors(sharpes,
         Wide-format DataFrame of in-sample returns of user-run backtests,
         indexed by time. Columns are code ids, rows are time (the format of
         time does not matter).
-        See fit_authors for more information.
     ::
                   abcd1234      efgh5678      ijkl9123
     2013-06-03   -0.000326      0.002815      0.002110
@@ -268,7 +267,6 @@ def fit_authors(sharpes,
         # Store the data in long format to avoid creating more dimensions
         trace['_sharpes'] = xr.DataArray(sharpes, dims=['sharpes_index',
                                                         'sharpes_columns'])
-        # TODO: complete save data
         trace['_returns'] = xr.DataArray(returns, dims['returns_index',
                                                        'returns_columns'])
 
