@@ -31,7 +31,6 @@ class AuthorModelBuilder(object):
             Long-format DataFrame of in-sample Sharpe ratios (from user-run
             backtests), indexed by user, algorithm and code ID.
             Note that currently, backtests are deduplicated based on code id.
-
             See fit_authors for more information.
         """
         self.num_authors = sharpes.meta_user_id.nunique()
@@ -99,7 +98,8 @@ class AuthorModelBuilder(object):
             Note that currently, backtests are deduplicated based on code id.
             See fit_authors for more information.
         corr : np.ndarray
-            Correlation matrix of backtests, using Ledoit-Wolf shrinkage.
+            Correlation matrix of returns streams (from backtests), estimated
+            using Ledoit-Wolf shrinkage.
             See fit_authors for more information.
         """
         with pm.Model() as model:
@@ -229,7 +229,7 @@ def fit_authors(sharpes,
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
 
-    # Check data and sort
+    # Check data
     _check_data(sharpes, returns)
 
     if seed is None:
