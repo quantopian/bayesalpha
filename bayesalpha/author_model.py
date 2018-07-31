@@ -250,8 +250,8 @@ def fit_authors(sharpes,
         # Store the data in long format to avoid creating more dimensions
         trace['_sharpes'] = xr.DataArray(sharpes, dims=['sharpes_index',
                                                         'sharpes_columns'])
-        trace['_returns'] = xr.DataArray(returns, dims['returns_index',
-                                                       'returns_columns'])
+        trace['_returns'] = xr.DataArray(returns, dims=['returns_index',
+                                                        'returns_columns'])
 
     return AuthorModelResult(trace)
 
