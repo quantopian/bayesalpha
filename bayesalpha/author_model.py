@@ -9,12 +9,14 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 import pymc3 as pm
+import theano.tensor as tt
 import xarray as xr
 from .serialize import to_xarray
 from ._version import get_versions
 from .base import BayesAlphaResult
 
 AUTHOR_MODEL_TYPE = 'author-model'
+APPROX_BDAYS_PER_YEAR = 252
 
 
 class AuthorModelBuilder(object):
@@ -114,25 +116,10 @@ class AuthorModelBuilder(object):
                                  + mu_author[self.author_to_backtest_encoding]
                                  + mu_algo[self.algo_to_backtest_encoding])
 
-            sigma_author_sd = pm.HalfNormal('sigma_author_sd', sd=1)
-            sigma_algo_sd = pm.HalfNormal('sigma_algo_sd', sd=1)
-
-            sigma_author = pm.HalfNormal('sigma_author', sd=sigma_author_sd,
-                                         shape=self.num_authors)
-            sigma_algo = pm.HalfNormal('sigma_algo', sd=sigma_algo_sd,
-                                       shape=self.num_algos)
-            sigma_backtest = \
-                pm.Deterministic(
-                    'sigma_backtest',
-                    np.sqrt(
-                        np.square(
-                            sigma_author[self.author_to_backtest_encoding]
-                        )
-                        + np.square(
-                            sigma_algo[self.algo_to_backtest_encoding]
-                        )
-                    )
-                )
+            sigma_backtest = pm.Deterministic(
+                'sigma_backtest',
+                tt.sqrt(APPROX_BDAYS_PER_YEAR / data.meta_trading_days)
+            )
 
             alpha_author = pm.Deterministic('alpha_author',
                                             mu_global + mu_author)
@@ -181,10 +168,10 @@ def fit_authors(data,
         backtests), indexed by user, algorithm and code ID.
         Note that currently, backtests are deduplicated based on code id.
     ::
-        meta_user_id   meta_algorithm_id   meta_code_id   sharpe_ratio
-    0   abcdef123456   ghijkl789123        abcdef000000   0.919407
-    1   abcdef123456   ghijkl789123        abcdef000001   1.129353
-    2   abcdef123456   ghijkl789123        abcdef000002   -0.005934
+       meta_user_id  meta_algorithm_id  meta_code_id  meta_trading_days  sharpe_ratio
+    0  abcdef123456  ghijkl789123       abcdef000000  136                0.919407
+    1  abcdef123456  ghijkl789123       abcdef000001  271                1.129353
+    2  abcdef123456  ghijkl789123       abcdef000002  229                -0.005934
 
     sampler_type : str
         Whether to use Markov chain Monte Carlo or variational inference.
