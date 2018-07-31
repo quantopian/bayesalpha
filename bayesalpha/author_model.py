@@ -126,7 +126,7 @@ class AuthorModelBuilder(object):
 
             sigma_backtest = pm.Deterministic(
                 'sigma_backtest',
-                tt.sqrt(APPROX_BDAYS_PER_YEAR / data.meta_trading_days)
+                tt.sqrt(APPROX_BDAYS_PER_YEAR / sharpes.meta_trading_days)
             )
 
             cov = corr * sigma_backtest[:, None] * sigma_backtest[None, :]
