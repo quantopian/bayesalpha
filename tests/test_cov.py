@@ -65,10 +65,19 @@ def algo_meta(date_range, T):
 
 
 @pytest.fixture
-def data():
+def sharpes():
     location = os.path.realpath(os.path.dirname(__file__))
     return pd.read_csv(
-        os.path.join(location, 'test_data/author_model_test_data.csv'),
+        os.path.join(location, 'test_data/author_model_test_sharpes.csv'),
+        index_col=0
+        )
+
+
+@pytest.fixture
+def returns():
+    location = os.path.realpath(os.path.dirname(__file__))
+    return pd.read_csv(
+        os.path.join(location, 'test_data/author_model_test_returns.csv'),
         index_col=0
         )
 
@@ -88,8 +97,9 @@ def test_fit_returns_population_vi(observations, algo_meta, Sigma_type):
     )
 
 
-def test_fit_authors(data):
-    trace = bayesalpha.fit_authors(data,
+def test_fit_authors(sharpes, returns):
+    trace = bayesalpha.fit_authors(sharpes,
+                                   returns,
                                    sampler_type='mcmc',
                                    sampler_args={
                                        'draws': 10,

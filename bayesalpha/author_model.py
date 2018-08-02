@@ -8,6 +8,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
+from sklearn.covariance import LedoitWolf
 import pymc3 as pm
 import theano.tensor as tt
 import xarray as xr
@@ -22,26 +23,25 @@ APPROX_BDAYS_PER_YEAR = 252
 class AuthorModelBuilder(object):
     """ Class to build the author model.  """
 
-    def __init__(self, data):
+    def __init__(self, sharpes, returns):
         """
         Initialize AuthorModelBuilder object.
 
         Parameters
         ----------
-        data : pd.DataFrame
+        sharpes : pd.DataFrame
             Long-format DataFrame of in-sample Sharpe ratios (from user-run
             backtests), indexed by user, algorithm and code ID.
             Note that currently, backtests are deduplicated based on code id.
-
             See fit_authors for more information.
         """
-        self.num_authors = data.meta_user_id.nunique()
-        self.num_algos = data.meta_algorithm_id.nunique()
+        self.num_authors = sharpes.meta_user_id.nunique()
+        self.num_algos = sharpes.meta_algorithm_id.nunique()
         # For num_backtests, nunique() and count() should be the same
-        self.num_backtests = data.meta_code_id.nunique()
+        self.num_backtests = sharpes.meta_code_id.nunique()
 
         # Which algos correspond to which authors?
-        df = (data.loc[:, ['meta_user_id', 'meta_algorithm_id']]
+        df = (sharpes.loc[:, ['meta_user_id', 'meta_algorithm_id']]
               .drop_duplicates(subset='meta_algorithm_id', keep='first')
               .reset_index()
               .meta_user_id
@@ -49,19 +49,24 @@ class AuthorModelBuilder(object):
         self.author_to_algo_encoding = LabelEncoder().fit_transform(df)
 
         # Which backtests correspond to which algos?
-        df = data.meta_algorithm_id.astype(str)
+        df = sharpes.meta_algorithm_id.astype(str)
         self.algo_to_backtest_encoding = LabelEncoder().fit_transform(df)
 
         # Which backtests correspond to which authors?
-        df = data.meta_user_id.astype(str)
+        df = sharpes.meta_user_id.astype(str)
         self.author_to_backtest_encoding = LabelEncoder().fit_transform(df)
 
-        self.model = self._build_model(data)
+        # Construct correlation matrix.
+        # 0 is a better estimate for mean returns than the sample mean!
+        returns_ = returns / returns.std()
+        self.corr = LedoitWolf(assume_centered=True).fit(returns_).covariance_
+
+        self.model = self._build_model(sharpes, self.corr)
 
         self.coords = {
-            'meta_user_id':      data.meta_user_id.drop_duplicates().values,
-            'meta_algorithm_id': data.meta_algorithm_id.drop_duplicates().values,
-            'meta_code_id':      data.meta_code_id.values
+            'meta_user_id':      sharpes.meta_user_id.drop_duplicates().values,
+            'meta_algorithm_id': sharpes.meta_algorithm_id.drop_duplicates().values,
+            'meta_code_id':      sharpes.meta_code_id.values
         }
 
         self.dims = {
@@ -69,31 +74,30 @@ class AuthorModelBuilder(object):
             'mu_author':       ('meta_user_id', ),
             'mu_author_raw':   ('meta_user_id', ),
             'mu_author_sd':    (),
-            'sigma_author':    ('meta_user_id', ),
-            'sigma_author_sd': (),
             'mu_algo':         ('meta_algorithm_id', ),
             'mu_algo_raw':     ('meta_algorithm_id', ),
             'mu_algo_sd':      (),
-            'sigma_algo':      ('meta_algorithm_id', ),
-            'sigma_algo_sd':   (),
             'mu_backtest':     ('meta_code_id', ),
             'sigma_backtest':  ('meta_code_id', ),
             'alpha_author':    ('meta_user_id', ),
             'alpha_algo':      ('meta_algorithm_id', )
         }
 
-    def _build_model(self, data):
+    def _build_model(self, sharpes, corr):
         """
         Build the entire author model (in one function). The model is
         sufficiently simple to specify entirely in one function.
 
         Parameters
         ----------
-        data : pd.DataFrame
+        sharpes : pd.DataFrame
             Long-format DataFrame of in-sample Sharpe ratios (from user-run
             backtests), indexed by user, algorithm and code ID.
             Note that currently, backtests are deduplicated based on code id.
-
+            See fit_authors for more information.
+        corr : np.ndarray
+            Correlation matrix of returns streams (from backtests), estimated
+            using Ledoit-Wolf shrinkage.
             See fit_authors for more information.
         """
         with pm.Model() as model:
@@ -118,8 +122,10 @@ class AuthorModelBuilder(object):
 
             sigma_backtest = pm.Deterministic(
                 'sigma_backtest',
-                tt.sqrt(APPROX_BDAYS_PER_YEAR / data.meta_trading_days)
+                tt.sqrt(APPROX_BDAYS_PER_YEAR / sharpes.meta_trading_days)
             )
+
+            cov = corr * sigma_backtest[:, None] * sigma_backtest[None, :]
 
             alpha_author = pm.Deterministic('alpha_author',
                                             mu_global + mu_author)
@@ -130,29 +136,36 @@ class AuthorModelBuilder(object):
                                  + mu_author[self.author_to_algo_encoding]
                                  + mu_algo)
 
-            sharpe = pm.Normal('sharpe',
-                               mu=mu_backtest,
-                               sd=sigma_backtest,
-                               shape=self.num_backtests,
-                               observed=data.sharpe_ratio)
+            sharpe = pm.MvNormal('sharpe',
+                                 mu=mu_backtest,
+                                 cov=cov,
+                                 shape=self.num_backtests,
+                                 observed=sharpes.sharpe_ratio)
 
         return model
 
 
 class AuthorModelResult(BayesAlphaResult):
-    def rebuild_model(self, data=None):
+    def rebuild_model(self, sharpes=None, returns=None):
         """ Return an AuthorModelBuilder that recreates the original model. """
-        if data is None:
-            data = (self.trace
-                        ._data
-                        .to_pandas()
-                        .reset_index()
-                        .copy())
+        if sharpes is None:
+            sharpes = (self.trace
+                       ._sharpes
+                       .to_pandas()
+                       .reset_index()
+                       .copy())
 
-        return AuthorModelBuilder(data)
+        if returns is None:
+            returns = (self.trace
+                       ._returns
+                       .to_pandas()
+                       .copy())
+
+        return AuthorModelBuilder(sharpes, returns)
 
 
-def fit_authors(data,
+def fit_authors(sharpes,
+                returns,
                 sampler_type='mcmc',
                 sampler_args=None,
                 seed=None,
@@ -163,7 +176,7 @@ def fit_authors(data,
 
     Parameters
     ----------
-    data : pd.DataFrame
+    sharpes : pd.DataFrame
         Long-format DataFrame of in-sample Sharpe ratios (from user-run
         backtests), indexed by user, algorithm and code ID.
         Note that currently, backtests are deduplicated based on code id.
@@ -172,6 +185,16 @@ def fit_authors(data,
     0  abcdef123456  ghijkl789123       abcdef000000  136                0.919407
     1  abcdef123456  ghijkl789123       abcdef000001  271                1.129353
     2  abcdef123456  ghijkl789123       abcdef000002  229                -0.005934
+
+    returns : pd.DataFrame
+        Wide-format DataFrame of in-sample returns of user-run backtests,
+        indexed by time. Columns are code ids, rows are time (the format of
+        time does not matter).
+    ::
+                  abcd1234      efgh5678      ijkl9123
+    2013-06-03   -0.000326      0.002815      0.002110
+    2013-06-04    0.000326     -0.000135     -0.001211
+    2013-06-05    0.000326      0.001918      0.002911
 
     sampler_type : str
         Whether to use Markov chain Monte Carlo or variational inference.
@@ -189,19 +212,15 @@ def fit_authors(data,
     if sampler_type not in {'mcmc', 'vi'}:
         raise ValueError("sampler_type not in {'mcmc', 'vi'}")
 
-    # Check data and sort
-    _check_data(data)
-    data = (data.sort_values(['meta_user_id',
-                              'meta_algorithm_id',
-                              'meta_code_id'])
-                .reset_index(drop=True))
+    # Check data
+    _check_data(sharpes, returns)
 
     if seed is None:
         seed = int(random.getrandbits(31))
     else:
         seed = int(seed)
 
-    builder = AuthorModelBuilder(data)
+    builder = AuthorModelBuilder(sharpes, returns)
     model, coords, dims = builder.model, builder.coords, builder.dims
 
     timestamp = datetime.isoformat(datetime.now())
@@ -229,47 +248,70 @@ def fit_authors(data,
 
     if save_data:
         # Store the data in long format to avoid creating more dimensions
-        trace['_data'] = xr.DataArray(data, dims=['data_index',
-                                                  'data_columns'])
+        trace['_sharpes'] = xr.DataArray(sharpes, dims=['sharpes_index',
+                                                        'sharpes_columns'])
+        trace['_returns'] = xr.DataArray(returns, dims=['returns_index',
+                                                        'returns_columns'])
 
     return AuthorModelResult(trace)
 
 
-def _check_data(data):
+def _check_data(sharpes, returns):
     """
     Run basic sanity checks on the data set.
 
     Parameters
     ----------
-    data : pd.DataFrame
+    sharpes : pd.DataFrame
         Long-format DataFrame of in-sample Sharpe ratios (from user-run
         backtests), indexed by user, algorithm and code ID.
         Note that currently, backtests are deduplicated based on code id.
-
+        See fit_authors for more information.
+    returns : pd.DataFrame
+        Wide-format DataFrame of in-sample returns of user-run backtests,
+        indexed by time. Columns are code ids, rows are time (the format of
+        time does not matter).
         See fit_authors for more information.
     """
 
     # FIXME deduplicating based on code id is not perfect. Ideally we would
     # deduplicate on backtest id.
-    if data.meta_code_id.nunique() != data.shape[0]:
+    if sharpes.meta_code_id.nunique() != sharpes.shape[0]:
         warnings.warn('Data set contains duplicate backtests.')
 
-    if (data.groupby('meta_algorithm_id')['sharpe_ratio']
+    if (sharpes.groupby('meta_algorithm_id')['sharpe_ratio']
             .count() < 5).any():
         warnings.warn('Data set contains algorithms with fewer than 5 '
                       'backtests.')
 
-    if (data.groupby('meta_user_id')['meta_algorithm_id'].nunique() < 5).any():
+    if (sharpes.groupby('meta_user_id')['meta_algorithm_id'].nunique() < 5).any():
         warnings.warn('Data set contains users with fewer than 5 algorithms.')
 
-    if ((data.sharpe_ratio > 20)
-            | (data.sharpe_ratio < -20)).any():
-        raise ValueError('Data set contains unrealistic Sharpes: greater than '
+    if ((sharpes.sharpe_ratio > 20)
+            | (sharpes.sharpe_ratio < -20)).any():
+        raise ValueError('`sharpes` contains unrealistic values: greater than '
                          '20 in magnitude.')
 
-    if pd.isnull(data).any().any():
-        raise ValueError('Data set contains NaNs.')
+    if pd.isnull(sharpes).any().any():
+        raise ValueError('`sharpes` contains NaNs.')
 
     # FIXME remove this check once all feature factory features are debugged.
-    if (data == -99999).any().any():
-        raise ValueError('Data set contains -99999s.')
+    if (sharpes == -99999).any().any():
+        raise ValueError('`sharpes` contains -99999s.')
+
+    if pd.isnull(returns).any().any():
+        raise ValueError('`returns` contains NaNs.')
+
+    if returns.columns.duplicated().any():
+        raise ValueError('`returns` contains duplicated code ids.')
+
+    if len(sharpes.meta_code_id) != len(returns.columns):
+        raise ValueError('`sharpes` and `returns` are different lengths.')
+
+    if not set(sharpes.meta_code_id) == set(returns.columns):
+        raise ValueError('`sharpes` and `returns` are the same length, but '
+                         'contain different code ids.')
+
+    if not (sharpes.meta_code_id == returns.columns).all():
+        raise ValueError('`sharpes` and `returns` contain the same code ids, '
+                         'but are ordered differently.')
