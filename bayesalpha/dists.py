@@ -483,8 +483,8 @@ class EQCorrMvNormal(pm.Continuous):
     @staticmethod
     def st_random(mu, std, corr, clust, size=None, _dist_shape=None):
         mu, std, corr, clust = map(np.asarray, [mu, std, corr, clust])
-        size = pm.distributions.distribution.infer_shape(size)
-        _dist_shape = pm.distributions.distribution.infer_shape(_dist_shape)
+        size = pm.distributions.distribution.to_tuple(size)
+        _dist_shape = pm.distributions.distribution.to_tuple(_dist_shape)
         k = mu.shape[-1]
         if corr.ndim == 1:
             corr = corr[None, :]
