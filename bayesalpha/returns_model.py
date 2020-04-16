@@ -552,7 +552,7 @@ class ReturnsModelResult(BayesAlphaResult):
 
         data = pd.DataFrame(index=index, columns=columns)
         data.values[...] = 0.
-        algos = self.trace.algo.to_pandas().copy()
+        algos = self.trace.algo.to_pandas().copy().to_frame()
         algos['created_at'] = start
         return self.rebuild_model(data, algos, predict=True)
 
