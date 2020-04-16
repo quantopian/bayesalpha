@@ -442,9 +442,12 @@ class ReturnsModelBuilder(object):
                 factor_rets = factor_rets[None, :, :] * factor_exposures.T[:, :, None]
                 factor_rets = factor_rets.sum(1)
                 returns[...] += factor_rets
-
+                exposures = xr.DataArray(factor_exposures, coords=[factors, algos])
+            else:
+                exposures = None
+                
             returns = xr.DataArray(returns, coords=[algos, time])
-            exposures = xr.DataArray(factor_exposures, coords=[factors, algos])
+            
             return xr.Dataset({'returns': returns, 'exposures': exposures})
 
         return predict
