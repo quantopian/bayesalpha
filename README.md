@@ -2,7 +2,9 @@
 
 # BayesAlpha
 
-Bayesian models for alpha.
+Bayesian models for alpha estimation.
+
+This project is no longer actively developed but pull requests will be evaluated.
 
 ## Models
 
