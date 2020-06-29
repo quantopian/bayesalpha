@@ -4,8 +4,8 @@ from setuptools import setup, find_packages
 import versioneer
 
 DISTNAME = 'bayesalpha'
-AUTHOR = 'Adrian Seyboldt & George Ho'
-AUTHOR_EMAIL = 'datascience@quantopian.com'
+AUTHOR = 'Adrian Seyboldt, George Ho, Thomas Wiecki'
+AUTHOR_EMAIL = 'opensource@quantopian.com'
 
 requirements = [
     'Bottleneck>=1.1',
